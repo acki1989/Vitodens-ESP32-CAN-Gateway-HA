@@ -1,0 +1,633 @@
+# ============================================================================
+#  Viessmann Vitodens über E3-CAN – ESP32-C3 SuperMini + SN65HVD230
+#
+#  Verdrahtung (SN65HVD230):
+#    VCC  -> 3V3     (niemals 5 V)
+#    GND  -> GND     (gemeinsame Masse mit dem CAN-Bus!)
+#    CTX  -> GPIO4
+#    CRX  -> GPIO5
+#    Rs   -> GND     (High-Speed-Modus)
+#    CANH -> E3-Bus CANH (gelbe Buchse)
+#    CANL -> E3-Bus CANL
+#  120 Ohm nur bestuecken, wenn der Adapter am Busende sitzt.
+#
+#  Bus: 250 kBit/s, UDS/ISO-TP, Ziel-ECU 0x680, Antworten 0x690.
+#  Datenpunkte: siehe "open3e esp32/dids-heizung.md" (22 DIDs, ohne Warmwasser).
+#
+#  Wichtig: Es darf immer nur EIN Teilnehmer aktiv Anfragen stellen.
+#  Vor dem ersten Start also open3e (Unraid/PC) stoppen.
+# ============================================================================
+
+substitutions:
+  devicename: vitodens-can
+  friendly_name: Vitodens CAN
+  can_tx_pin: "4"
+  can_rx_pin: "5"
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+  comment: "Vitodens E3-CAN (UDS/ISO-TP), 22 Datenpunkte"
+  includes:
+    - vitodens-uds.h
+  on_boot:
+    priority: 250
+    then:
+      - lambda: |-
+          vitodens::bus().begin(${can_tx_pin}, ${can_rx_pin});
+
+esp32:
+  variant: esp32c3
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+    # ESPHome schliesst den TWAI-Treiber standardmaessig aus (nur esp32_can
+    # zieht ihn). Wir nutzen den Treiber direkt im Header -> wieder aktivieren.
+    #   "driver"        -> Legacy-Shim mit driver/twai.h
+    #   "esp_driver_twai" -> eigentliche TWAI-Implementierung (IDF 5.5)
+    advanced:
+      include_builtin_idf_components:
+        - driver
+        - esp_driver_twai
+
+logger:
+  level: INFO
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+
+safe_mode:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: NONE
+  ap:
+    ssid: "Vitodens-CAN"
+    password: "vitodens-can-2026"
+
+captive_portal:
+
+# Ein Schritt pro Tick; die Klasse arbeitet nicht blockierend.
+interval:
+  - interval: 20ms
+    then:
+      - lambda: 'vitodens::bus().loop();'
+
+# ---------------------------------------------------------------- Freigaben
+switch:
+  - platform: template
+    name: "Schreiben freigeben"
+    id: sw_write_enable
+    optimistic: true
+    # Nach jedem Neustart wieder aus - Schreibzugriffe muessen bewusst
+    # freigegeben werden.
+    restore_mode: ALWAYS_OFF
+    icon: mdi:lock-open-variant
+    entity_category: config
+
+# ---------------------------------------------------------------- Aktionen
+button:
+  - platform: template
+    name: "CAN Bus neu starten"
+    id: btn_can_restart
+    entity_category: diagnostic
+    icon: mdi:restart
+    on_press:
+      - lambda: 'vitodens::bus().recover();'
+
+# ---------------------------------------------------------------- Sensoren
+sensor:
+  # --- Temperaturen / Druck ---
+  - platform: template
+    name: "Vorlauftemperatur"
+    id: s_vorlauf
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(268, vitodens::bus().v.flow_temp);
+
+  - platform: template
+    name: "Vorlauftemperatur Soll"
+    id: s_vorlauf_soll
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(527, vitodens::bus().v.flow_setpoint);
+
+  - platform: template
+    name: "Außentemperatur"
+    id: s_aussentemp
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(274, vitodens::bus().v.out_temp);
+
+  - platform: template
+    name: "Abgastemperatur"
+    id: s_abgas
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(331, vitodens::bus().v.flue_temp);
+
+  - platform: template
+    name: "Wasserdruck"
+    id: s_druck
+    unit_of_measurement: "bar"
+    device_class: pressure
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(318, vitodens::bus().v.pressure);
+
+  # --- Betriebsstatistik (DID 1346) ---
+  - platform: template
+    name: "Betriebsstunden"
+    id: s_betriebsstunden
+    unit_of_measurement: "h"
+    device_class: duration
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(1346, vitodens::bus().v.op_hours);
+
+  - platform: template
+    name: "Brennerstunden"
+    id: s_brennerstunden
+    unit_of_measurement: "h"
+    device_class: duration
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(1346, vitodens::bus().v.burner_hours);
+
+  - platform: template
+    name: "Brennerstarts"
+    id: s_brennerstarts
+    unit_of_measurement: ""
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(1346, vitodens::bus().v.burner_starts);
+
+  # --- Energieverbrauch Heizung (DID 548) ---
+  - platform: template
+    name: "Energieverbrauch Heizung heute"
+    id: s_energie_heute
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(548, vitodens::bus().v.energy_today);
+
+  - platform: template
+    name: "Energieverbrauch Heizung 7 Tage"
+    id: s_energie_7d
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(548, vitodens::bus().v.energy_7d);
+
+  - platform: template
+    name: "Energieverbrauch Heizung Monat"
+    id: s_energie_monat
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(548, vitodens::bus().v.energy_month);
+
+  - platform: template
+    name: "Energieverbrauch Heizung Jahr"
+    id: s_energie_jahr
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(548, vitodens::bus().v.energy_year);
+
+  # --- Gasverbrauch Heizung (DID 544) ---
+  - platform: template
+    name: "Gasverbrauch Heizung heute"
+    id: s_gas_heute
+    unit_of_measurement: "m³"
+    device_class: gas
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(544, vitodens::bus().v.gas_today);
+
+  - platform: template
+    name: "Gasverbrauch Heizung 7 Tage"
+    id: s_gas_7d
+    unit_of_measurement: "m³"
+    device_class: gas
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(544, vitodens::bus().v.gas_7d);
+
+  - platform: template
+    name: "Gasverbrauch Heizung Monat"
+    id: s_gas_monat
+    unit_of_measurement: "m³"
+    device_class: gas
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(544, vitodens::bus().v.gas_month);
+
+  - platform: template
+    name: "Gasverbrauch Heizung Jahr"
+    id: s_gas_jahr
+    unit_of_measurement: "m³"
+    device_class: gas
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(544, vitodens::bus().v.gas_year);
+
+  # --- Wärmeerzeugung Heizung (DID 1211) ---
+  - platform: template
+    name: "Wärmemenge Heizung heute"
+    id: s_waerme_heute
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(1211, vitodens::bus().v.heat_today);
+
+  - platform: template
+    name: "Wärmemenge Heizung 7 Tage"
+    id: s_waerme_7d
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(1211, vitodens::bus().v.heat_7d);
+
+  - platform: template
+    name: "Wärmemenge Heizung Monat"
+    id: s_waerme_monat
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(1211, vitodens::bus().v.heat_month);
+
+  - platform: template
+    name: "Wärmemenge Heizung Jahr"
+    id: s_waerme_jahr
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(1211, vitodens::bus().v.heat_year);
+
+  # --- Brenner / Pumpe (DID 364, 381) ---
+  - platform: template
+    name: "Ionisationsstrom"
+    id: s_ionisation
+    unit_of_measurement: "µA"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(364, vitodens::bus().v.ionization);
+
+  - platform: template
+    name: "Heizkreispumpe Soll"
+    id: s_pumpe_soll
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(381, vitodens::bus().v.pump_target);
+
+  - platform: template
+    name: "Heizkreispumpe Ist"
+    id: s_pumpe_ist
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(381, vitodens::bus().v.pump_actual);
+
+  # --- Heizkurve (DID 880) ---
+  - platform: template
+    name: "Heizkurve Niveau"
+    id: s_heizkurve_niveau
+    unit_of_measurement: ""
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(880, vitodens::bus().v.curve_level);
+
+  - platform: template
+    name: "Heizkurve Fußpunkt"
+    id: s_heizkurve_fusspunkt
+    unit_of_measurement: "°C"
+    device_class: temperature
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(880, vitodens::bus().v.curve_basepoint);
+
+  # --- Diagnose ---
+  - platform: template
+    name: "Fehleranzahl"
+    id: s_fehleranzahl
+    unit_of_measurement: ""
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(265, (float) vitodens::bus().v.error_count);
+
+  - platform: template
+    name: "Gateway WLAN-Signal"
+    id: s_gateway_signal
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().value(900, vitodens::bus().v.gateway_rssi);
+
+  - platform: template
+    name: "Datenalter"
+    id: s_data_age
+    unit_of_measurement: "s"
+    state_class: measurement
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    icon: mdi:timer-sand
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().data_age();
+
+  - platform: template
+    name: "CAN Anfragen OK"
+    id: s_can_ok
+    unit_of_measurement: ""
+    state_class: total_increasing
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: 'return (float) vitodens::bus().requests_ok();'
+
+  - platform: template
+    name: "CAN Fehler"
+    id: s_can_fehler
+    unit_of_measurement: ""
+    state_class: total_increasing
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: 'return (float) vitodens::bus().requests_err();'
+
+# ---------------------------------------------------------------- Textsensoren
+text_sensor:
+  - platform: template
+    name: "Sensorstatus Vorlauf"
+    id: t_vorlauf_status
+    entity_category: diagnostic
+    icon: mdi:check-circle-outline
+    update_interval: 30s
+    lambda: |-
+      return vitodens::bus().text(268, vitodens::bus().v.flow_state);
+
+  - platform: template
+    name: "Sensorstatus Außentemperatur"
+    id: t_aussen_status
+    entity_category: diagnostic
+    icon: mdi:check-circle-outline
+    update_interval: 30s
+    lambda: |-
+      return vitodens::bus().text(274, vitodens::bus().v.out_state);
+
+  - platform: template
+    name: "Sensorstatus Abgas"
+    id: t_abgas_status
+    entity_category: diagnostic
+    icon: mdi:check-circle-outline
+    update_interval: 30s
+    lambda: |-
+      return vitodens::bus().text(331, vitodens::bus().v.flue_state);
+
+  - platform: template
+    name: "Sensorstatus Wasserdruck"
+    id: t_druck_status
+    entity_category: diagnostic
+    icon: mdi:check-circle-outline
+    update_interval: 30s
+    lambda: |-
+      return vitodens::bus().text(318, vitodens::bus().v.press_state);
+
+  - platform: template
+    name: "Gastyp"
+    id: t_gastyp
+    entity_category: diagnostic
+    icon: mdi:fire
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().text(929, vitodens::bus().v.gas_type);
+
+  - platform: template
+    name: "Nächster Servicetermin"
+    id: t_servicetermin
+    entity_category: diagnostic
+    icon: mdi:calendar-check
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().text(522, vitodens::bus().v.service_date);
+
+  - platform: template
+    name: "Fehlerliste"
+    id: t_fehlerliste
+    entity_category: diagnostic
+    icon: mdi:alert-circle-outline
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().text(265, vitodens::bus().v.error_ids);
+
+  - platform: template
+    name: "Gateway MAC"
+    id: t_gateway_mac
+    entity_category: diagnostic
+    icon: mdi:ethernet
+    update_interval: 300s
+    lambda: |-
+      return vitodens::bus().text(593, vitodens::bus().v.gateway_mac);
+
+  - platform: template
+    name: "Gateway WLAN-IP"
+    id: t_gateway_ip
+    entity_category: diagnostic
+    icon: mdi:ip-network
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().text(607, vitodens::bus().v.gateway_ip);
+
+  - platform: template
+    name: "Gateway Netzwerkstatus"
+    id: t_gateway_netz
+    entity_category: diagnostic
+    icon: mdi:access-point-network
+    update_interval: 60s
+    lambda: |-
+      return vitodens::bus().text(602, vitodens::bus().v.gateway_net_state);
+
+  - platform: template
+    name: "CAN Bus Status"
+    id: t_can_status
+    entity_category: diagnostic
+    icon: mdi:lan-connect
+    update_interval: 30s
+    lambda: 'return std::string(vitodens::bus().bus_state());'
+
+  - platform: template
+    name: "CAN letzter Fehler"
+    id: t_can_fehler
+    entity_category: diagnostic
+    icon: mdi:alert-outline
+    update_interval: 30s
+    lambda: |-
+      const std::string &e = vitodens::bus().last_error();
+      if (e.empty()) return std::string("-");
+      return e;
+
+  - platform: template
+    name: "Schreibstatus"
+    id: t_write_status
+    entity_category: diagnostic
+    icon: mdi:pencil-check
+    update_interval: 10s
+    lambda: |-
+      return vitodens::bus().write_status();
+
+# ---------------------------------------------------------------- Binärsensoren
+binary_sensor:
+  - platform: template
+    name: "Brennerflamme"
+    id: b_flamme
+    device_class: power
+    icon: mdi:fire
+    lambda: |-
+      return vitodens::bus().flag(364, vitodens::bus().v.flame);
+
+  - platform: template
+    name: "Heizkreispumpe"
+    id: b_pumpe
+    device_class: power
+    icon: mdi:water-sync
+    lambda: |-
+      return vitodens::bus().flag(381, vitodens::bus().v.pump_on);
+
+  - platform: template
+    name: "Wartung erforderlich"
+    id: b_wartung
+    entity_category: diagnostic
+    device_class: problem
+    icon: mdi:wrench
+    lambda: |-
+      return vitodens::bus().flag(901, vitodens::bus().v.service_required);
+
+  - platform: template
+    name: "Störung vorhanden"
+    id: b_stoerung
+    entity_category: diagnostic
+    device_class: problem
+    icon: mdi:alert
+    lambda: |-
+      return vitodens::bus().flag(902, vitodens::bus().v.malfunction != 0);
+
+  - platform: template
+    name: "Backend verbunden"
+    id: b_backend
+    entity_category: diagnostic
+    device_class: connectivity
+    icon: mdi:cloud-check
+    lambda: |-
+      return vitodens::bus().flag(1165, vitodens::bus().v.backend_connected);
+
+  - platform: template
+    name: "CAN Daten aktuell"
+    id: b_can_fresh
+    entity_category: diagnostic
+    device_class: connectivity
+    icon: mdi:lan-check
+    lambda: |-
+      return vitodens::bus().fresh_any();
+
+# ---------------------------------------------------------------- Stellwert
+number:
+  - platform: template
+    name: "Heizkurve 1 Steigung"
+    id: n_heizkurve
+    min_value: 0.2
+    max_value: 3.5
+    step: 0.1
+    mode: box
+    optimistic: false
+    icon: mdi:slope-uphill
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(880, vitodens::bus().v.curve_gradient);
+    set_action:
+      - lambda: |-
+          if (!id(sw_write_enable).state) {
+            ESP_LOGW("vitodens_can", "Schreiben gesperrt - erst 'Schreiben freigeben' einschalten");
+            return;
+          }
+          vitodens::bus().request_curve(x);

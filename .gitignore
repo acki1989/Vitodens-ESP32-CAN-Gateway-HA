@@ -1,0 +1,13 @@
+# ESPHome-Build-Artefakte
+.esphome/
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Geheimnisse (WLAN, API-Key) niemals ins Repo
+secrets.yaml
+
+# Logs und Editor-Reste
+*.log
+*.bak
+.DS_Store

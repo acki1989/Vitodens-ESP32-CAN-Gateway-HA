@@ -1,0 +1,17 @@
+Vitodens E3-CAN Gateway (ESP32-C3 + SN65HVD230)
+================================================
+
+Copyright 2026 acki1989
+
+Dieses Projekt steht unter der Apache License 2.0 (siehe LICENSE).
+
+Es enthält abgeleitete Angaben aus dem Projekt open3e:
+
+  open3e — https://github.com/open3e/open3e
+  Copyright (c) open3e contributors
+  Lizenz: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+
+Übernommen wurden ausschließlich die Definitionen der Datenpunkte
+(DID-Nummern, Byte-Layouts, Skalierungsfaktoren, Enum-Werte) sowie die
+Information, welche UDS-Dienste (0x22 zum Lesen, 0x2E zum Schreiben)
+verwendet werden. Es wurde kein Quellcode von open3e kopiert.
