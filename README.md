@@ -338,7 +338,7 @@ alle 5 s selbst.
 | Plausibilität | Vorlauf 33,5 °C, Außen 10,9 °C, Abgas 31,9 °C, Wasserdruck 1,4 bar, Betriebsstunden 25.906 h, Brennerstarts 10.002, Flamme an, Pumpe 60 % |
 | Gegenprobe open3e | identische Werte für Wasserdruck (1,4), Heizkurve (0,4), Gateway-MAC (`B8-74-24-37-D5-98`), WLAN-IP (`192.168.178.80`), Wartung (an) |
 | Schreibbarkeit DID 880 | über die open3e-HA-Integration bestätigt (0,7 gesetzt, zurückgelesen, gehalten) |
-| Schreiben mit dieser Firmware | **bestanden** – idempotenter Test mit unverändertem Wert 0,4: ECU antwortet `0x6E`, `Schreibstatus` = `ok`, 0 CAN-Fehler. Wertänderung mit Rückkehr noch nicht ausgelöst. |
+| Schreiben mit dieser Firmware | **bestanden** – Rundlauf 0,4 → 0,5 → 0,4: jeweils `0x6E` und korrekt zurückgelesen, 0 CAN-Fehler. Nach dem Schreiben wird DID 880 nach 2 s erneut gelesen (Schreibbestätigung). |
 
 ---
 

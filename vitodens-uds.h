@@ -477,6 +477,17 @@ class VitodensBus {
     }
   }
 
+  // Job gezielt in X ms erneut lesen (z. B. als Schreib-Bestaetigung)
+  void job_due_(uint16_t did, uint32_t in_ms) {
+    uint32_t now = millis();
+    for (uint8_t i = 0; i < JOB_COUNT; i++) {
+      if (this->jobs_[i].did == did) {
+        this->jobs_[i].due = now + in_ms;
+        return;
+      }
+    }
+  }
+
   // ------------------------------------------------------------ Senden
   bool send_frame_(uint32_t id, const uint8_t *data) {
     twai_message_t m = {};
@@ -730,6 +741,8 @@ class VitodensBus {
       this->write_state_ = WriteState::NONE;
       this->write_status_ = "ok";
       this->job_done_(did, true);
+      // 2 s spaeter erneut lesen: bestaetigt, dass der Wert angekommen ist
+      this->job_due_(880, 2000);
     } else {
       this->fail_(did, "Schreiben nicht bestaetigt");
       this->write_failed_("nicht bestaetigt");
