@@ -99,7 +99,8 @@ Maximal 3 Versuche mit 2 s Abstand, danach Abbruch.
 
 ## Datenpunkte (22)
 
-Kurzfassung mit Live-Werten als Anhang: [`docs/dids-heizung.md`](docs/dids-heizung.md).
+Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
+[`docs/dids-heizung.md`](docs/dids-heizung.md).
 
 | DID | open3e-Name | Byte | Inhalt | Einheit | Zugriff | Takt |
 |---:|---|---:|---|---|---|---|
@@ -246,7 +247,6 @@ Weitere DIDs ergänzen: Eintrag in `jobs_[]` (Periode wählen) und ein `case` in
 | `CAN Bus Status` | `OK` / `BUS_OFF` / `STOPPED` / `RECOVERING` (TWAI-Zustand) |
 | `CAN Anfragen OK` / `CAN Fehler` | Zähler seit dem Start |
 | `CAN letzter Fehler` | letzter Fehlschlag inkl. NRC, z. B. `NRC 0x31 bei DID 0x10C` |
-| Log-Ausgabe | pro DID hoechstens eine Warnzeile pro Minute (Zaehler laufen exakt weiter) |
 | `Datenalter` | Sekunden seit der letzten gültigen Antwort |
 | `CAN Daten aktuell` | mindestens ein Wert frisch |
 | `Schreibstatus` | `idle` / `laeuft` / `Versuch 2: …` / `abgebrochen: …` / `ok` |
