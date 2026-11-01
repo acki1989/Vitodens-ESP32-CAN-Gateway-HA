@@ -39,8 +39,18 @@ static constexpr uint32_t GAP_MS = 25;         // Pause zwischen zwei Anfragen
 static constexpr uint32_t FAST_PERIOD_MS = 30000;
 static constexpr uint32_t SLOW_PERIOD_MS = 300000;
 static constexpr uint32_t ERROR_RETRY_MS = 10000;
+static constexpr uint32_t SCAN_PROBE_TIMEOUT_MS = 150;   // Adress-Scan je Adresse
+static constexpr uint32_t WRITE_VERIFY_DELAY_MS = 2000;  // Re-Read nach Schreiben
+static constexpr uint32_t WRITE_RETRY_DELAY_MS = 2000;   // Abstand der Schreibversuche
+static constexpr uint32_t LOG_THROTTLE_MS = 60000;       // Log-Bremse pro DID
+static constexpr uint32_t FRESH_ANY_CACHE_MS = 1000;     // Cache fuer fresh_any()
+static constexpr uint32_t FRESH_MIN_WINDOW_MS = 120000;  // Frischefenster mindestens
 static constexpr size_t RX_BUF_SIZE = 128;
 static constexpr uint8_t MAX_FRAMES_PER_TICK = 16;
+
+// Wertebereich der Heizkurven-Steigung (wie in der HA-Entitaet)
+static constexpr float CURVE_MIN = 0.2f;
+static constexpr float CURVE_MAX = 3.5f;
 
 // ---------------------------------------------------------------- Hilfsfunktionen
 static inline int16_t le_i16(const uint8_t *p) {
@@ -74,30 +84,27 @@ static inline const char *sensor_state_str(uint8_t s) {
 // ---------------------------------------------------------------- Messwerte
 struct Values {
   // 268 Vorlauftemperatur (primär, ab Wärmeerzeuger)
-  float flow_temp{NAN}, flow_min{NAN}, flow_max{NAN}, flow_avg{NAN};
+  float flow_temp{NAN};
   std::string flow_state;
   // 527 Vorlauftemperatur Soll
   float flow_setpoint{NAN};
   // 274 Außentemperatur
-  float out_temp{NAN}, out_min{NAN}, out_max{NAN}, out_avg{NAN};
+  float out_temp{NAN};
   std::string out_state;
   // 331 Abgastemperatur
-  float flue_temp{NAN}, flue_min{NAN}, flue_max{NAN}, flue_avg{NAN};
+  float flue_temp{NAN};
   std::string flue_state;
   // 318 Wasserdruck
-  float pressure{NAN}, press_min{NAN}, press_max{NAN}, press_avg{NAN};
+  float pressure{NAN};
   std::string press_state;
   // 1346 Betriebsstatistik
   float op_hours{NAN}, burner_hours{NAN}, burner_starts{NAN};
   // 548 Energieverbrauch Heizung (kWh)
-  float energy_today{NAN}, energy_7d{NAN}, energy_month{NAN}, energy_past_month{NAN},
-      energy_year{NAN}, energy_past_year{NAN};
+  float energy_today{NAN}, energy_7d{NAN}, energy_month{NAN}, energy_year{NAN};
   // 544 Gasverbrauch Heizung (m³)
-  float gas_today{NAN}, gas_7d{NAN}, gas_month{NAN}, gas_past_month{NAN},
-      gas_year{NAN}, gas_past_year{NAN};
+  float gas_today{NAN}, gas_7d{NAN}, gas_month{NAN}, gas_year{NAN};
   // 1211 Wärmeerzeugung Heizung (kWh)
-  float heat_today{NAN}, heat_7d{NAN}, heat_month{NAN}, heat_past_month{NAN},
-      heat_year{NAN}, heat_past_year{NAN};
+  float heat_today{NAN}, heat_7d{NAN}, heat_month{NAN}, heat_year{NAN};
   // 364 Brennerflamme + Ionisationsstrom
   bool flame{false};
   float ionization{NAN};
@@ -244,8 +251,6 @@ class VitodensBus {
 
   // --- Datenzustand -------------------------------------------------------
   // ok(): DID wurde seit dem Start mindestens einmal gelesen (Altverhalten).
-  bool ok(uint16_t did) const { return this->have_(did); }
-
   // Fuer Template-Sensoren:
   //  - nie gelesen -> nichts senden ({}), es gibt keinen Wert
   //  - veraltet    -> ebenfalls nichts senden, der letzte Wert bleibt stehen.
@@ -279,11 +284,22 @@ class VitodensBus {
     return (float) ((millis() - this->last_any_ok_ms_) / 1000);
   }
   bool fresh_any() {
+    // Der Template-Binaersensor ruft das Lambda in jeder loop()-Iteration auf
+    // (~60x/s). Ein 1-s-Cache reicht voellig.
+    uint32_t now = millis();
+    if (this->fresh_any_valid_ && (int32_t) (now - this->fresh_any_ms_) < (int32_t) FRESH_ANY_CACHE_MS)
+      return this->fresh_any_value_;
+    bool any = false;
     for (uint8_t i = 0; i < JOB_COUNT; i++) {
-      if (this->fresh_(this->jobs_[i].did))
-        return true;
+      if (this->fresh_(this->jobs_[i].did)) {
+        any = true;
+        break;
+      }
     }
-    return false;
+    this->fresh_any_valid_ = true;
+    this->fresh_any_ms_ = now;
+    this->fresh_any_value_ = any;
+    return any;
   }
   const std::string &write_status() const { return this->write_status_; }
   const std::string &bus_ids() const { return this->bus_ids_; }
@@ -304,6 +320,11 @@ class VitodensBus {
       ESP_LOGW(TAG, "Schreibvorgang laeuft noch - Anfrage ignoriert");
       return;
     }
+    if (value < CURVE_MIN || value > CURVE_MAX) {
+      this->write_status_ = "abgelehnt: ausserhalb 0,2..3,5";
+      ESP_LOGW(TAG, "Heizkurve %.1f ausserhalb des Bereichs - ignoriert", value);
+      return;
+    }
     int g = (int) lroundf(value * 10.0f);
     if (g < 0) g = 0;
     if (g > 255) g = 255;
@@ -314,8 +335,6 @@ class VitodensBus {
     this->write_state_ = WriteState::NEED_READ;
     ESP_LOGD(TAG, "Schreibwunsch Heizkurve: Rohwert %u", this->write_gradient_);
   }
-  bool write_pending() const { return this->write_state_ != WriteState::NONE; }
-
   void recover() {
     if (!this->driver_ok_) {
       this->started_ = false;
@@ -420,6 +439,14 @@ class VitodensBus {
   bool any_ok_{false};
   uint32_t last_any_ok_ms_{0};
 
+  // Cache fuer fresh_any()
+  bool fresh_any_valid_{false};
+  bool fresh_any_value_{false};
+  uint32_t fresh_any_ms_{0};
+
+  // Log-Bremse pro DID (Index = Position in jobs_)
+  uint32_t log_next_ms_[JOB_COUNT]{};
+
   // Aktuell adressierte ECU (im Normalbetrieb fest 0x680/0x690)
   uint32_t tx_id_{ECU_TX_ID};
   uint32_t rx_id_{ECU_RX_ID};
@@ -454,8 +481,8 @@ class VitodensBus {
     if (it == this->last_ok_.end())
       return false;
     uint32_t window = this->period_of_(did) * 5;
-    if (window < 120000)
-      window = 120000;
+    if (window < FRESH_MIN_WINDOW_MS)
+      window = FRESH_MIN_WINDOW_MS;
     return (int32_t) (millis() - it->second) < (int32_t) window;
   }
 
@@ -520,7 +547,7 @@ class VitodensBus {
     }
     this->did_ = did;
     this->phase_ = Phase::WAIT_READ;
-    this->deadline_ = millis() + (this->scan_probe_ ? 150 : REQUEST_TIMEOUT_MS);
+    this->deadline_ = millis() + (this->scan_probe_ ? SCAN_PROBE_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
     this->buf_total_ = 0;
     this->buf_pos_ = 0;
     this->buf_multi_ = false;
@@ -595,7 +622,9 @@ class VitodensBus {
 
     if (pci == 0x0) {  // Single Frame
       uint8_t len = (uint8_t) (d[0] & 0x0F);
-      if (len < 1 || len > 7)
+      // Nutzlaenge gegen die tatsaechliche Frame-Laenge pruefen, sonst
+      // koennte Padding als Nutzdaten gelesen werden.
+      if (len < 1 || len > 7 || (uint8_t) (1 + len) > n)
         return;
       this->complete_(d + 1, len);
       return;
@@ -672,16 +701,12 @@ class VitodensBus {
     // Timeout-Pfad markiert den Job als erledigt. Frueher wurde hier
     // abgebrochen, ohne job_done_() zu rufen -> Retry im 25-ms-Takt, sobald
     // der Bus ueberhaupt antwortet.
-    if (data[0] == 0x7F) {
-      if (be_u16(data + 1) != did)
-        return;
-    } else if ((data[0] == 0x62 || data[0] == 0x6E) && be_u16(data + 1) == did) {
-      // passt
-    } else {
+    const bool is_nrc = (data[0] == 0x7F);
+    const bool is_positive = (data[0] == 0x62 || data[0] == 0x6E);
+    if ((!is_nrc && !is_positive) || be_u16(data + 1) != did)
       return;
-    }
 
-    if (data[0] == 0x7F) {  // Negative Response
+    if (is_nrc) {  // Negative Response
       char msg[48];
       snprintf(msg, sizeof(msg), "NRC 0x%02X bei DID 0x%03X", len > 2 ? data[2] : 0, did);
       this->fail_(did, msg);
@@ -742,7 +767,7 @@ class VitodensBus {
       this->write_status_ = "ok";
       this->job_done_(did, true);
       // 2 s spaeter erneut lesen: bestaetigt, dass der Wert angekommen ist
-      this->job_due_(880, 2000);
+      this->job_due_(880, WRITE_VERIFY_DELAY_MS);
     } else {
       this->fail_(did, "Schreiben nicht bestaetigt");
       this->write_failed_("nicht bestaetigt");
@@ -769,6 +794,18 @@ class VitodensBus {
     char msg[64];
     snprintf(msg, sizeof(msg), "DID 0x%03X: %s", did, reason);
     this->last_error_ = msg;
+
+    // Log-Bremse: pro DID hoechstens eine Zeile pro Minute. Der Zaehler oben
+    // bleibt exakt - nur das Log wird nicht geflutet, wenn der Bus tot ist.
+    uint32_t now = millis();
+    for (uint8_t i = 0; i < JOB_COUNT; i++) {
+      if (this->jobs_[i].did != did)
+        continue;
+      if ((int32_t) (now - this->log_next_ms_[i]) < 0)
+        return;
+      this->log_next_ms_[i] = now + LOG_THROTTLE_MS;
+      break;
+    }
     ESP_LOGW(TAG, "%s", msg);
   }
 
@@ -785,7 +822,7 @@ class VitodensBus {
       ESP_LOGE(TAG, "Heizkurve nicht geschrieben (%s)", reason);
     } else {
       this->write_state_ = WriteState::NEED_READ;
-      this->write_next_try_ = millis() + 2000;
+      this->write_next_try_ = millis() + WRITE_RETRY_DELAY_MS;
       this->write_status_ = std::string("Versuch ") + std::to_string((int) this->write_attempts_ + 1) + ": " + reason;
       ESP_LOGW(TAG, "Heizkurve: %s", reason);
     }
@@ -813,9 +850,6 @@ class VitodensBus {
       case 268:  // FlowTemperatureSensor: 4x int16 /10 + Status
         if (n < 9) return false;
         this->v.flow_temp = le_i16(d) / 10.0f;
-        this->v.flow_min = le_i16(d + 2) / 10.0f;
-        this->v.flow_max = le_i16(d + 4) / 10.0f;
-        this->v.flow_avg = le_i16(d + 6) / 10.0f;
         this->v.flow_state = sensor_state_str(d[8]);
         return true;
 
@@ -827,27 +861,18 @@ class VitodensBus {
       case 274:  // OutsideTemperatureSensor
         if (n < 9) return false;
         this->v.out_temp = le_i16(d) / 10.0f;
-        this->v.out_min = le_i16(d + 2) / 10.0f;
-        this->v.out_max = le_i16(d + 4) / 10.0f;
-        this->v.out_avg = le_i16(d + 6) / 10.0f;
         this->v.out_state = sensor_state_str(d[8]);
         return true;
 
       case 331:  // FlueGasTemperatureSensor
         if (n < 9) return false;
         this->v.flue_temp = le_i16(d) / 10.0f;
-        this->v.flue_min = le_i16(d + 2) / 10.0f;
-        this->v.flue_max = le_i16(d + 4) / 10.0f;
-        this->v.flue_avg = le_i16(d + 6) / 10.0f;
         this->v.flue_state = sensor_state_str(d[8]);
         return true;
 
       case 318:  // WaterPressureSensor (open3e liefert 1.4 bei 1.4 bar)
         if (n < 9) return false;
         this->v.pressure = le_i16(d) / 10.0f;
-        this->v.press_min = le_i16(d + 2) / 10.0f;
-        this->v.press_max = le_i16(d + 4) / 10.0f;
-        this->v.press_avg = le_i16(d + 6) / 10.0f;
         this->v.press_state = sensor_state_str(d[8]);
         return true;
 
@@ -863,9 +888,7 @@ class VitodensBus {
         this->v.energy_today = le_i32(d) / 10.0f;
         this->v.energy_7d = le_i32(d + 4) / 10.0f;
         this->v.energy_month = le_i32(d + 8) / 10.0f;
-        this->v.energy_past_month = le_i32(d + 12) / 10.0f;
         this->v.energy_year = le_i32(d + 16) / 10.0f;
-        this->v.energy_past_year = le_i32(d + 20) / 10.0f;
         return true;
 
       case 544:  // GasConsumptionCentralHeating: 6x int16 /10 m³
@@ -873,9 +896,7 @@ class VitodensBus {
         this->v.gas_today = le_i16(d) / 10.0f;
         this->v.gas_7d = le_i16(d + 2) / 10.0f;
         this->v.gas_month = le_i16(d + 4) / 10.0f;
-        this->v.gas_past_month = le_i16(d + 6) / 10.0f;
         this->v.gas_year = le_i16(d + 8) / 10.0f;
-        this->v.gas_past_year = le_i16(d + 10) / 10.0f;
         return true;
 
       case 1211:  // GeneratedCentralHeatingOutput: 6x int32 /10 kWh
@@ -883,9 +904,7 @@ class VitodensBus {
         this->v.heat_today = le_i32(d) / 10.0f;
         this->v.heat_7d = le_i32(d + 4) / 10.0f;
         this->v.heat_month = le_i32(d + 8) / 10.0f;
-        this->v.heat_past_month = le_i32(d + 12) / 10.0f;
         this->v.heat_year = le_i32(d + 16) / 10.0f;
-        this->v.heat_past_year = le_i32(d + 20) / 10.0f;
         return true;
 
       case 364:  // Flame: State, 2x raw, int16 /100 µA, raw
