@@ -105,7 +105,7 @@ Maximal 3 Versuche mit 2 s Abstand, danach Abbruch. Der Fußpunkt ist nur lesbar
 
 ---
 
-## Datenpunkte (22)
+## Datenpunkte (23)
 
 Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
 [`docs/dids-heizung.md`](docs/dids-heizung.md).
@@ -114,6 +114,7 @@ Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
 |---:|---|---:|---|---|---|---|
 | 268 | `FlowTemperatureSensor` | 9 | 4× int16 /10 (Ist/Min/Max/Mittel) + Status | °C | ro | 30 s |
 | 527 | `FlowTemperatureTargetSetpoint` | 2 | int16 /10 | °C | ro | 30 s |
+| 526 | `ModulationCurrentValue` | 2 | int16 /10 | % | ro | 30 s |
 | 274 | `OutsideTemperatureSensor` | 9 | wie 268 | °C | ro | 30 s |
 | 331 | `FlueGasTemperatureSensor` | 9 | wie 268 | °C | ro | 30 s |
 | 318 | `WaterPressureSensor` | 9 | wie 268 | bar | ro | 30 s |
@@ -148,9 +149,9 @@ Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
 
 ---
 
-## Entitäten (55)
+## Entitäten (58)
 
-**Sensoren (30)** – Vorlauf, Vorlauf-Soll, Außentemperatur, Abgas, Wasserdruck,
+**Sensoren (31)** – Vorlauf, Vorlauf-Soll, Außentemperatur, Abgas, Wasserdruck, **Modulation**,
 Betriebs-/Brennerstunden, Brennerstarts, je 4× Energie/Gas/Wärme (heute, 7 Tage,
 Monat, Jahr), Ionisationsstrom, Pumpen-Soll/-Ist, Heizkurve Niveau/Fußpunkt,
 Fehleranzahl, Gateway-WLAN-Signal, Datenalter, CAN-Anfragen-OK, CAN-Fehler
@@ -162,10 +163,10 @@ CAN letzter Fehler, Schreibstatus, Bus-IDs (Diagnose)
 **Binärsensoren (6)** – Brennerflamme, Heizkreispumpe, Wartung erforderlich,
 Störung vorhanden, Backend verbunden, **CAN Daten aktuell**
 
-**Weitere (5)** – `number` Heizkurve 1 Steigung (0,2–3,5),
-`number` Heizkurve 1 Niveau (−13…40 K),
-`switch` Schreiben freigeben, `button` CAN Bus neu starten,
-`button` Bus-Scan starten
+**Weitere (7)** – `number` Heizkurve 1 Steigung (0,2–3,5),
+`number` Heizkurve 1 Niveau (−13…40 K), `number` Entwurf Neigung,
+`number` Entwurf Niveau, `switch` Schreiben freigeben,
+`button` CAN Bus neu starten, `button` Bus-Scan starten
 
 ### Verhalten bei veralteten Daten
 
@@ -336,6 +337,52 @@ alle 5 s selbst.
 - Keine Langzeit-Statistik für Verbrauchswerte (bewusst `measurement`).
 
 ---
+
+## Home-Assistant-Begleitung (optional)
+
+Zum Gateway gehören auf HA-Seite:
+
+**Dashboard `heizung-kennlinie`** mit drei Views:
+
+| View | Inhalt |
+|---|---|
+| Heizkurve | Plotly-Kurve (Ist/Entwurf), Stützpunkt-Tabelle, Entwurfs-Tasten, Gerätewerte, Übernehmen/Verwerfen |
+| Verbrauch | Gasverbrauch pro Tag (Statistik, `max`), Brenner/Pumpe 24 h |
+| Brenner | Außen/Vorlauf/Modulation über 24 h (zwei Y-Achsen), Flamme 7 Tage, Starts/Tag |
+
+**Skripte** (UI-Skripte, nicht YAML):
+
+| Skript | Aufgabe |
+|---|---|
+| `heizkurve_uebernehmen` | schreibt Entwurf auf das Gerät, prüft vorher die Schreibfreigabe |
+| `heizkurve_verwerfen` | setzt den Entwurf auf die Gerätewerte |
+| `heizkurve_neigung_schritt` | ±0,1 je Schritt, geklemmt auf 0,2…3,5 |
+| `heizkurve_niveau_schritt` | ±1 je Schritt, geklemmt auf −13…40 |
+
+**Zwei YAML-Sensoren** in `configuration.yaml` (Brenner-Diagnose):
+
+```yaml
+sensor:
+  - platform: statistics
+    name: "Brennerstarts 24 h"
+    entity_id: sensor.vitodens_can_brennerstarts
+    state_characteristic: change
+    max_age:
+      hours: 24
+    sampling_size: 500
+
+  - platform: history_stats
+    name: "Brennerlaufzeit heute"
+    entity_id: binary_sensor.vitodens_can_brennerflamme
+    state: "on"
+    type: time
+    start: "{{ today_at('00:00') }}"
+    end: "{{ now() }}"
+```
+
+Für die Kurve wird `plotly-graph-card` benötigt (HACS oder manuell unter
+`/config/www/community/plotly-graph-card/`), als Lovelace-Ressource vom Typ
+`JavaScript-Modul`.
 
 ## Verifikation
 

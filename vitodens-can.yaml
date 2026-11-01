@@ -138,6 +138,16 @@ sensor:
       return vitodens::bus().value(527, vitodens::bus().v.flow_setpoint);
 
   - platform: template
+    name: "Modulation"
+    id: s_modulation
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(526, vitodens::bus().v.modulation);
+
+  - platform: template
     name: "Außentemperatur"
     id: s_aussentemp
     unit_of_measurement: "°C"
@@ -663,3 +673,31 @@ number:
             return;
           }
           vitodens::bus().request_curve_level(x);
+
+  # --- Entwurfswerte: werden NICHT geschrieben, nur im Dashboard als Regler
+  #     verwendet. Uebernommen wird erst ueber den Button (Skript).
+  - platform: template
+    name: "Heizkurve 1 Neigung (Entwurf)"
+    id: n_entwurf_neigung
+    min_value: 0.2
+    max_value: 3.5
+    step: 0.1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 0.4
+    icon: mdi:slope-uphill
+    entity_category: config
+
+  - platform: template
+    name: "Heizkurve 1 Niveau (Entwurf)"
+    id: n_entwurf_niveau
+    min_value: -13
+    max_value: 40
+    step: 1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 3
+    icon: mdi:plus-minus-variant
+    entity_category: config

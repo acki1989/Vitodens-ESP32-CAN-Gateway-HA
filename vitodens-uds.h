@@ -114,6 +114,8 @@ struct Values {
   // 381 Heizkreispumpe
   bool pump_on{false};
   float pump_target{NAN}, pump_actual{NAN};
+  // 526 Modulation (Istwert)
+  float modulation{NAN};
   // 880 Heizkurve Mischer 1
   float curve_gradient{NAN}, curve_level{NAN}, curve_basepoint{NAN};
   // 929 Gastyp
@@ -392,7 +394,7 @@ class VitodensBus {
     uint32_t due;
   };
 
-  static constexpr uint8_t JOB_COUNT = 22;
+  static constexpr uint8_t JOB_COUNT = 23;
   Job jobs_[JOB_COUNT] = {
       // Messwerte: alle 30 s
       {268, FAST_PERIOD_MS, 0},
@@ -400,6 +402,7 @@ class VitodensBus {
       {274, FAST_PERIOD_MS, 0},
       {331, FAST_PERIOD_MS, 0},
       {318, FAST_PERIOD_MS, 0},
+      {526, FAST_PERIOD_MS, 0},
       {364, FAST_PERIOD_MS, 0},
       {381, FAST_PERIOD_MS, 0},
       // Statistik / Diagnose: alle 5 min
@@ -882,6 +885,11 @@ class VitodensBus {
         if (n < 9) return false;
         this->v.flow_temp = le_i16(d) / 10.0f;
         this->v.flow_state = sensor_state_str(d[8]);
+        return true;
+
+      case 526:  // ModulationCurrentValue: int16 /10, Prozent
+        if (n < 2) return false;
+        this->v.modulation = le_u16(d) / 10.0f;
         return true;
 
       case 527:  // FlowTemperatureTargetSetpoint: int16 /10

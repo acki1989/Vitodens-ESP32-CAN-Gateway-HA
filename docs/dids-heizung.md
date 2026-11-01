@@ -35,6 +35,7 @@ Datenpunkts sind **little-endian**.
 | 331 | `FlueGasTemperatureSensor` | 9 | wie 268 | °C | 42,6 |
 | 318 | `WaterPressureSensor` | 9 | wie 268 | bar | 1,4 |
 | 1346 | `HeatEngineStatistical` | 12 | 3× int32: Betriebsstunden, Brennerstunden, Starts | h / h / – | 25.906 / 9.809 / 10.002 |
+| 526 | `ModulationCurrentValue` | 2 | int16 /10 | % | 0,0 (Brenner aus) |
 | 548 | `EnergyConsumptionCentralHeating` | 24 | 6× int32 /10: heute, 7 Tage, Monat, Vormonat, Jahr, Vorjahr | kWh | 0,3 |
 | 544 | `GasConsumptionCentralHeating` | 12 | 6× int16 /10, gleiche Staffelung | m³ | 4,9 |
 | 1211 | `GeneratedCentralHeatingOutput` | 24 | 6× int32 /10, gleiche Staffelung | kWh | 49,0 |
@@ -78,7 +79,7 @@ die ECU akzeptiert den Schreibzugriff aber – 2026-11-01 mit einem Rundlauf
 | 602 | `GatewayRemoteLocalNetworkStatus` | 1 | 3 = verbunden | verbunden |
 | 900 | `GatewayRemoteSignalStrength` | 1 | 0–100 | 41 |
 
-**Summe: 22 DIDs** – 10 Messwerte + 2 Zustände + 1 Stellwert + 9 Diagnose.
+**Summe: 23 DIDs** – 11 Messwerte + 2 Zustände + 1 Stellwert + 9 Diagnose.
 
 Hinweis: 593/607/602/900/1165 beschreiben das **eingebaute Viessmann-Internetmodul**
 (MAC-OUI `B8:74:24` = Viessmann Elektronik), nicht das Gateway. Über CAN lesbar, für
