@@ -29,6 +29,11 @@ static const char *const TAG = "vitodens_can";
 
 static constexpr uint32_t ECU_TX_ID = 0x680;  // Anfragen gehen hierhin
 static constexpr uint32_t ECU_RX_ID = 0x690;  // hier antwortet die ECU
+
+// DIAGNOSE: Wenn true, akzeptiert der Controller ALLE Frames und protokolliert
+// jede neu gesehene CAN-ID einmal. Damit laesst sich pruefen, welche ECUs auf
+// dem angeschlossenen Strang ueberhaupt senden. Fuer den Normalbetrieb false.
+static constexpr bool SCAN_IDS = false;
 static constexpr uint32_t REQUEST_TIMEOUT_MS = 400;
 static constexpr uint32_t GAP_MS = 25;         // Pause zwischen zwei Anfragen
 static constexpr uint32_t FAST_PERIOD_MS = 30000;
@@ -43,6 +48,10 @@ static inline int16_t le_i16(const uint8_t *p) {
 }
 static inline uint16_t le_u16(const uint8_t *p) {
   return (uint16_t) ((uint16_t) p[0] | ((uint16_t) p[1] << 8));
+}
+// UDS-Adressen (DID, NRC-Bezug) stehen big-endian im Frame
+static inline uint16_t be_u16(const uint8_t *p) {
+  return (uint16_t) (((uint16_t) p[0] << 8) | (uint16_t) p[1]);
 }
 static inline int32_t le_i32(const uint8_t *p) {
   return (int32_t) ((uint32_t) p[0] | ((uint32_t) p[1] << 8) |
@@ -122,6 +131,7 @@ class VitodensBus {
       return;
     this->tx_pin_ = tx_pin;
     this->rx_pin_ = rx_pin;
+    ESP_LOGI(TAG, "Initialisiere TWAI (TX %d, RX %d, 250 kbit/s)", tx_pin, rx_pin);
 
     twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t) tx_pin, (gpio_num_t) rx_pin,
                                                           TWAI_MODE_NORMAL);
@@ -131,11 +141,18 @@ class VitodensBus {
 
     twai_timing_config_t t = TWAI_TIMING_CONFIG_250KBITS();
 
-    // Nur Antworten der Ziel-ECU annehmen (11-Bit-ID 0x690)
+    // Nur Antworten der Ziel-ECU annehmen (11-Bit-ID 0x690).
+    // Im Diagnosemodus alles annehmen, damit fremde IDs sichtbar werden.
     twai_filter_config_t f = {};
     f.single_filter = true;
-    f.acceptance_code = (ECU_RX_ID << 21);
-    f.acceptance_mask = ~(0x7FFu << 21);
+    if (SCAN_IDS) {
+      f.acceptance_code = 0x00000000;
+      f.acceptance_mask = 0xFFFFFFFF;
+    } else {
+      // Antworten aller ECUs annehmen: 0x690, 0x694, 0x698 ... (0x69x)
+      f.acceptance_code = (0x690u << 21);
+      f.acceptance_mask = ~(0x7F0u << 21);
+    }
 
     if (twai_driver_install(&g, &t, &f) != ESP_OK) {
       ESP_LOGE(TAG, "TWAI-Treiber konnte nicht installiert werden");
@@ -168,6 +185,13 @@ class VitodensBus {
     // ueberfaellig und wird im 25-ms-Takt erneut angefragt - das blockiert alle
     // anderen Datenpunkte und flutet den Bus.
     if (this->phase_ != Phase::IDLE && (int32_t) (now - this->deadline_) >= 0) {
+      if (this->scan_probe_) {
+        // Adress-Scan: keine Antwort = Adresse existiert nicht, kein Fehlerlog
+        this->scan_probe_ = false;
+        this->reset_rx_();
+        this->sweep_addr_++;
+        return;
+      }
       uint16_t did = this->did_;
       Phase ph = this->phase_;
       this->fail_(did, ph == Phase::WAIT_WRITE ? "Timeout beim Schreiben" : "Timeout");
@@ -185,6 +209,23 @@ class VitodensBus {
       return;
     if ((int32_t) (now - this->last_tx_) < (int32_t) GAP_MS)
       return;
+
+    // Adress-Scan beim Start: alle ECU-Adressen 0x680..0x6EF mit DID 256
+    // (BusIdentification, bei E3-Geraeten immer vorhanden) abklopfen.
+    if (this->sweep_active_) {
+      if (this->sweep_addr_ > 0x6EF) {
+        this->sweep_active_ = false;
+        this->tx_id_ = ECU_TX_ID;
+        this->rx_id_ = ECU_RX_ID;
+        ESP_LOGI(TAG, "Adress-Scan beendet, weiter mit 0x680");
+        return;
+      }
+      this->tx_id_ = this->sweep_addr_;
+      this->rx_id_ = this->sweep_addr_ + 0x10;
+      this->scan_probe_ = true;
+      this->start_read_(256);
+      return;
+    }
 
     // Offener Schreibwunsch: erst aktuellen Stand lesen (Read-Modify-Write).
     // Mit Wartezeit zwischen den Versuchen, damit ein schweigendes Steuergeraet
@@ -245,6 +286,17 @@ class VitodensBus {
     return false;
   }
   const std::string &write_status() const { return this->write_status_; }
+  const std::string &bus_ids() const { return this->bus_ids_; }
+
+  // Adress-Scan manuell starten: klopft 0x680..0x6EF mit DID 256 ab und
+  // protokolliert die Antworten in bus_ids().
+  void start_scan() {
+    this->bus_ids_.clear();
+    this->foreign_count_ = 0;
+    this->sweep_addr_ = 0x680;
+    this->sweep_active_ = true;
+    ESP_LOGI(TAG, "Adress-Scan gestartet (0x680..0x6EF)");
+  }
 
   // Heizkurve 1 Steigung setzen (DID 880, Sub-Feld Gradient, Faktor 10).
   void request_curve(float value) {
@@ -367,6 +419,22 @@ class VitodensBus {
   std::map<uint16_t, uint32_t> last_ok_;
   bool any_ok_{false};
   uint32_t last_any_ok_ms_{0};
+
+  // Aktuell adressierte ECU (im Normalbetrieb fest 0x680/0x690)
+  uint32_t tx_id_{ECU_TX_ID};
+  uint32_t rx_id_{ECU_RX_ID};
+
+  // Adress-Scan: standardmaessig AUS (kostet 20 s Bootzeit). Ueber den
+  // Button "Bus-Scan starten" oder zum Debuggen einschalten.
+  bool sweep_active_{false};
+  uint32_t sweep_addr_{0x680};
+  bool scan_probe_{false};
+
+  // Diagnose: gesehene fremde CAN-IDs
+  static constexpr uint8_t FOREIGN_MAX = 40;
+  uint32_t foreign_ids_[FOREIGN_MAX]{};
+  uint8_t foreign_count_{0};
+  std::string bus_ids_;
   uint32_t ok_count_{0};
   uint32_t err_count_{0};
   std::string last_error_;
@@ -427,7 +495,12 @@ class VitodensBus {
     f[1] = 0x22;  // UDS ReadDataByIdentifier
     f[2] = (uint8_t) (did >> 8);
     f[3] = (uint8_t) (did & 0xFF);
-    if (!this->send_frame_(ECU_TX_ID, f)) {
+    if (!this->send_frame_(this->tx_id_, f)) {
+      if (this->scan_probe_) {
+        this->scan_probe_ = false;
+        this->sweep_addr_++;
+        return;
+      }
       this->fail_(did, "Senden fehlgeschlagen");
       this->job_done_(did, false);
       if (this->write_state_ == WriteState::READING)
@@ -436,7 +509,7 @@ class VitodensBus {
     }
     this->did_ = did;
     this->phase_ = Phase::WAIT_READ;
-    this->deadline_ = millis() + REQUEST_TIMEOUT_MS;
+    this->deadline_ = millis() + (this->scan_probe_ ? 150 : REQUEST_TIMEOUT_MS);
     this->buf_total_ = 0;
     this->buf_pos_ = 0;
     this->buf_multi_ = false;
@@ -453,7 +526,7 @@ class VitodensBus {
     f[2] = (uint8_t) (did >> 8);
     f[3] = (uint8_t) (did & 0xFF);
     memcpy(&f[4], data, len);
-    if (!this->send_frame_(ECU_TX_ID, f)) {
+    if (!this->send_frame_(this->tx_id_, f)) {
       this->fail_(did, "Senden (Write) fehlgeschlagen");
       return false;
     }
@@ -468,7 +541,7 @@ class VitodensBus {
 
   void send_flow_control_() {
     uint8_t f[8] = {0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    this->send_frame_(ECU_TX_ID, f);
+    this->send_frame_(this->tx_id_, f);
   }
 
   // ------------------------------------------------------------ Empfangen
@@ -477,9 +550,30 @@ class VitodensBus {
       twai_message_t m;
       if (twai_receive(&m, 0) != ESP_OK)
         return;
-      if (m.rtr || m.identifier != ECU_RX_ID)
+      if (m.rtr)
         continue;
+      if (m.identifier != this->rx_id_) {
+        // Diagnose: fremde IDs einmal protokollieren
+        if (SCAN_IDS)
+          this->note_foreign_id_(m.identifier, m.data_length_code);
+        continue;
+      }
       this->handle_frame_(m.data, m.data_length_code);
+    }
+  }
+
+  // Jede neu gesehene fremde CAN-ID genau einmal ins Log schreiben.
+  void note_foreign_id_(uint32_t id, uint8_t len) {
+    for (uint8_t i = 0; i < this->foreign_count_; i++) {
+      if (this->foreign_ids_[i] == id)
+        return;
+    }
+    if (this->foreign_count_ < FOREIGN_MAX) {
+      this->foreign_ids_[this->foreign_count_++] = id;
+      char b[32];
+      snprintf(b, sizeof(b), "Fremd-ID gesehen: 0x%03X (DLC %u)", (unsigned) id, (unsigned) len);
+      this->bus_ids_ = this->bus_ids_.empty() ? std::string(b) : this->bus_ids_ + " | " + b;
+      ESP_LOGI(TAG, "%s", b);
     }
   }
 
@@ -538,7 +632,43 @@ class VitodensBus {
       return;
     if (len < 3)
       return;
+
+    // Antwort auf einen Adress-Scan: nur protokollieren, nicht auswerten.
+    if (this->scan_probe_) {
+      this->scan_probe_ = false;
+      uint16_t n = (uint16_t) (len - 3);
+      if (n > 12)
+        n = 12;
+      char hex[40];
+      size_t pos = 0;
+      for (uint16_t i = 0; i < n && pos + 4 < sizeof(hex); i++) {
+        pos += (size_t) snprintf(hex + pos, sizeof(hex) - pos, "%02X ", data[3 + i]);
+      }
+      char b[90];
+      snprintf(b, sizeof(b), "ECU 0x%03X antwortet (DID %u): %s", (unsigned) this->tx_id_,
+               (unsigned) be_u16(data + 1), hex);
+      ESP_LOGI(TAG, "%s", b);
+      this->bus_ids_ = this->bus_ids_.empty() ? std::string(b) : this->bus_ids_ + " | " + b;
+      this->reset_rx_();
+      this->sweep_addr_++;
+      return;
+    }
     uint16_t did = this->did_;
+
+    // Nur Antworten auf die aktuell angefragte DID akzeptieren. Alles andere
+    // (verspaetete Antwort, fremde DID, Response eines anderen Testers) wird
+    // ignoriert - die Anfrage laeuft dann regulaer in ihren Timeout, und der
+    // Timeout-Pfad markiert den Job als erledigt. Frueher wurde hier
+    // abgebrochen, ohne job_done_() zu rufen -> Retry im 25-ms-Takt, sobald
+    // der Bus ueberhaupt antwortet.
+    if (data[0] == 0x7F) {
+      if (be_u16(data + 1) != did)
+        return;
+    } else if ((data[0] == 0x62 || data[0] == 0x6E) && be_u16(data + 1) == did) {
+      // passt
+    } else {
+      return;
+    }
 
     if (data[0] == 0x7F) {  // Negative Response
       char msg[48];
@@ -553,9 +683,8 @@ class VitodensBus {
     }
 
     if (this->phase_ == Phase::WAIT_READ) {
-      if (data[0] != 0x62 || le_u16(data + 1) != did) {
-        this->reset_rx_();  // fremde Antwort, weiter warten
-        return;
+      if (data[0] != 0x62) {
+        return;  // DID passt, aber falsche Antwortart -> Timeout abwarten
       }
       const uint8_t *payload = data + 3;
       uint16_t plen = (uint16_t) (len - 3);
@@ -596,7 +725,7 @@ class VitodensBus {
     }
 
     // WAIT_WRITE
-    if (data[0] == 0x6E && le_u16(data + 1) == did) {
+    if (data[0] == 0x6E && be_u16(data + 1) == did) {
       ESP_LOGI(TAG, "Heizkurve geschrieben (Steigung %.1f)", this->write_gradient_ / 10.0f);
       this->write_state_ = WriteState::NONE;
       this->write_status_ = "ok";

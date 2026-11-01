@@ -12,9 +12,10 @@ verwendet. Die Byte-Layouts sind aus `Open3Edatapoints.py` übernommen.
 
 | | |
 |---|---|
-| Firmware | kompiliert (ESPHome 2026.10.1 / ESP-IDF 5.5.6), Flash 49,9 %, RAM 32,9 % |
-| Schreibpfad DID 880 | am Gerät verifiziert (über die open3e-HA-Integration, nicht mit dieser Firmware) |
-| Laufzeit am echten Bus | **noch nicht erprobt** – Inbetriebnahme steht aus |
+| Firmware | ESPHome 2026.10.1 / ESP-IDF 5.5.6, Flash 49,9 %, RAM 32,9 % |
+| Laufzeit am echten Bus | **seit 01.11.2026 im Einsatz** – 22 DIDs, 0 Fehler, 0 Timeouts |
+| Gegenprobe | Werte identisch mit der open3e-HA-Integration (Wasserdruck 1,4 bar, Heizkurve 0,4, Gateway-MAC, WLAN-IP) |
+| Schreibpfad DID 880 | über die open3e-Integration verifiziert (0,7 gesetzt und zurückgelesen); mit dieser Firmware noch nicht ausgelöst |
 
 ---
 
@@ -125,7 +126,9 @@ Kurzfassung mit Live-Werten als Anhang: [`docs/dids-heizung.md`](docs/dids-heizu
 | 602 | `GatewayRemoteLocalNetworkStatus` | 1 | 3 = verbunden | – | ro | 300 s |
 | 900 | `GatewayRemoteSignalStrength` | 1 | 0–100 | % | ro | 300 s |
 
-### Abweichungen von den open3e-Metadaten- **DID 318**: open3e deklariert `hPa`, geliefert wird aber der Bar-Wert (1,4).
+### Abweichungen von den open3e-Metadaten
+
+- **DID 318**: open3e deklariert `hPa`, geliefert wird aber der Bar-Wert (1,4).
   Hier als `bar` veröffentlicht – passend zur HA-Integration.
 - **DID 880**: open3e führt das Feld als `acc="ro"`, die HA-Integration schreibt es
   aber. Am Gerät wurde bestätigt: der Schreibzugriff wird akzeptiert.
@@ -136,22 +139,23 @@ Kurzfassung mit Live-Werten als Anhang: [`docs/dids-heizung.md`](docs/dids-heizu
 
 ---
 
-## Entitäten (52)
+## Entitäten (54)
 
 **Sensoren (30)** – Vorlauf, Vorlauf-Soll, Außentemperatur, Abgas, Wasserdruck,
 Betriebs-/Brennerstunden, Brennerstarts, je 4× Energie/Gas/Wärme (heute, 7 Tage,
 Monat, Jahr), Ionisationsstrom, Pumpen-Soll/-Ist, Heizkurve Niveau/Fußpunkt,
 Fehleranzahl, Gateway-WLAN-Signal, Datenalter, CAN-Anfragen-OK, CAN-Fehler
 
-**Textsensoren (13)** – Sensorstatus (Vorlauf, Außen, Abgas, Druck), Gastyp,
+**Textsensoren (14)** – Sensorstatus (Vorlauf, Außen, Abgas, Druck), Gastyp,
 Servicetermin, Fehlerliste, Gateway-MAC/-IP/-Netzwerkstatus, CAN-Bus-Status,
-CAN letzter Fehler, Schreibstatus
+CAN letzter Fehler, Schreibstatus, Bus-IDs (Diagnose)
 
 **Binärsensoren (6)** – Brennerflamme, Heizkreispumpe, Wartung erforderlich,
 Störung vorhanden, Backend verbunden, **CAN Daten aktuell**
 
-**Weitere (3)** – `number` Heizkurve 1 Steigung (0,2–3,5),
-`switch` Schreiben freigeben, `button` CAN Bus neu starten
+**Weitere (4)** – `number` Heizkurve 1 Steigung (0,2–3,5),
+`switch` Schreiben freigeben, `button` CAN Bus neu starten,
+`button` Bus-Scan starten
 
 ### Verhalten bei veralteten Daten
 
@@ -245,6 +249,8 @@ Weitere DIDs ergänzen: Eintrag in `jobs_[]` (Periode wählen) und ein `case` in
 | `Datenalter` | Sekunden seit der letzten gültigen Antwort |
 | `CAN Daten aktuell` | mindestens ein Wert frisch |
 | `Schreibstatus` | `idle` / `laeuft` / `Versuch 2: …` / `abgebrochen: …` / `ok` |
+| `Bus-IDs (Diagnose)` | Ergebnis des Adress-Scans: welche ECU auf DID 256 antwortet |
+| Button `Bus-Scan starten` | klopft `0x680..0x6EF` mit DID 256 ab (~20 s), Ergebnis im Log und in `Bus-IDs` |
 
 Häufige Negative Response Codes:
 
@@ -264,7 +270,15 @@ alle 5 s selbst.
 
 ## Stolperfallen (aus der Entwicklung, alle verifiziert)
 
-1. **`driver/twai.h` fehlt bei ESPHome 2026.10.** ESPHome schließt die IDF-Treiber aus.
+1. **Die DID-Wiederholung in einer UDS-Antwort ist big-endian.** Dieser Fehler hat
+   am längsten gekostet: `62 01 0C …` für DID 268 wurde mit `le_u16()` als `0x0C01`
+   gelesen, passte nie zur angefragten DID und **jede gültige Antwort wurde
+   verworfen** – sichtbar nur als Timeout, obwohl ACK und Antwort kamen.
+   ```cpp
+   be_u16(data + 1) == did   // richtig: (data[1] << 8) | data[2]
+   ```
+   Nutzdaten *innerhalb* eines Datenpunkts sind dagegen little-endian.
+2. **`driver/twai.h` fehlt bei ESPHome 2026.10.** ESPHome schließt die IDF-Treiber aus.
    Beide Komponenten müssen im Framework-Abschnitt wieder aktiviert werden:
    ```yaml
    framework:
@@ -274,27 +288,36 @@ alle 5 s selbst.
          - driver           # Legacy-Shim mit driver/twai.h
          - esp_driver_twai  # eigentliche Implementierung (IDF 5.5)
    ```
-2. **`globals` mit eigenem C++-Typ scheitert.** ESPHome generiert die Global-Speicher
+3. **`globals` mit eigenem C++-Typ scheitert.** ESPHome generiert die Global-Speicher
    *vor* dem `includes:`-Block, der Typ ist dort noch unbekannt. Lösung: Zugriffsfunktion
    mit statischer Instanz (`vitodens::bus()`).
-3. **`NAN` an Home-Assistant-Sensoren ist keine gute Idee** (siehe oben). „Unbekannt"
+4. **`NAN` an Home-Assistant-Sensoren ist keine gute Idee** (siehe oben). „Unbekannt"
    lässt sich damit nicht erzeugen – nur HA-Fehler.
-4. **Ein Timeout ohne `job_done_` blockiert alles.** Bleibt der Job „überfällig", fragt
+5. **Ein Timeout ohne `job_done_` blockiert alles.** Bleibt der Job „überfällig", fragt
    der Scheduler denselben DID im 25-ms-Takt erneut und kommt nie zu den anderen.
    Gleiches gilt für den NRC-Pfad.
-5. **Schreibzustand muss bei Abbrüchen mit aufgeräumt werden.** Wird nur der
+6. **Schreibzustand muss bei Abbrüchen mit aufgeräumt werden.** Wird nur der
    Empfangszustand zurückgesetzt (z. B. bei Bus-Recovery), bleibt der Schreibvorgang
    „laufend" und `request_curve()` verweigert dauerhaft.
-6. **`total_increasing` nur für monotone Werte.** Bei rollierenden Fenstern
+7. **`total_increasing` nur für monotone Werte.** Bei rollierenden Fenstern
    (7 Tage, Monat, Jahr) interpretiert Home Assistant jeden Rückgang als
-   Zählerrücksetzung und bucht Phantomverbrauch.
+   Zählerrücksetzung und bucht Phantomverbrauch. `measurement` ist dort richtig –
+   aber nicht zusammen mit `device_class: energy`/`gas` (HA lehnt die Kombination ab).
+8. **Diagnose per Adress-Scan.** Wenn auf eine Anfrage nur Timeouts kommen, obwohl
+   der Bus ACKs liefert: alle ECU-Adressen `0x680..0x6EF` mit DID 256
+   (`BusIdentification`, bei E3-Geräten immer vorhanden) abklopfen. Genau so wurde
+   der Big-Endian-Fehler gefunden – und bestätigt, dass `0x680`, `0x684` und `0x688`
+   alle antworten. Der Scan läuft nicht beim Boot (kostet 20 s), sondern über den
+   Button **Bus-Scan starten**.
 
 ---
 
 ## Grenzen und offene Punkte
 
-- Ziel-ECU ist fest `0x680` (Antwort `0x690`). Andere ECUs (`0x684`, `0x688`) sind
-  nicht angebunden; dafür müsste die Adresse pro DID konfigurierbar werden.
+- Ziel-ECU ist `0x680` (Antwort `0x690`). Der Adress-Scan zeigt, dass `0x684` und
+  `0x688` ebenfalls antworten, und der Empfangsfilter akzeptiert `0x690..0x69F` –
+  angebunden ist aber nur `0x680`. Für weitere ECUs müsste die Adresse pro DID
+  konfigurierbar werden.
 - Fehlerliste ohne Klartextnamen (siehe DID 265).
 - Nur ein Stellwert. Weitere `rw`-DIDs (z. B. 396 Warmwasser-Soll, 537/538
   Betriebsart) sind nicht implementiert.
@@ -309,10 +332,13 @@ alle 5 s selbst.
 | Prüfung | Ergebnis |
 |---|---|
 | Byte-Layouts | gegen `Open3Edatapoints.py` abgeglichen |
-| Schreibbarkeit DID 880 | indirekt bestätigt: über die open3e-HA-Integration gesetzt, Wert gelesen und gehalten |
 | C++ | Kompilat mit `-Wall -Wextra` gegen IDF-Stubs fehlerfrei |
 | Firmware | mehrfach mit ESPHome 2026.10.1 / IDF 5.5.6 gebaut |
-| Laufzeit | **offen** – Inbetriebnahme am Gerät steht aus |
+| Laufzeit am Gerät | **bestanden** – 22 DIDs, 0 Fehler, 0 Timeouts |
+| Plausibilität | Vorlauf 33,5 °C, Außen 10,9 °C, Abgas 31,9 °C, Wasserdruck 1,4 bar, Betriebsstunden 25.906 h, Brennerstarts 10.002, Flamme an, Pumpe 60 % |
+| Gegenprobe open3e | identische Werte für Wasserdruck (1,4), Heizkurve (0,4), Gateway-MAC (`B8-74-24-37-D5-98`), WLAN-IP (`192.168.178.80`), Wartung (an) |
+| Schreibbarkeit DID 880 | über die open3e-HA-Integration bestätigt (0,7 gesetzt, zurückgelesen, gehalten) |
+| Schreiben mit dieser Firmware | **noch nicht ausgelöst** – Test: Freigabe an, gleichen Wert schreiben, `Schreibstatus` prüfen |
 
 ---
 
