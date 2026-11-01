@@ -289,7 +289,8 @@ sensor:
     name: "Gasverbrauch Heizung Jahr"
     id: s_gas_jahr
     unit_of_measurement: "m³"
-    state_class: measurement
+    device_class: gas
+    state_class: total_increasing
     accuracy_decimals: 1
     update_interval: 60s
     lambda: |-

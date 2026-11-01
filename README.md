@@ -380,6 +380,11 @@ sensor:
     end: "{{ now() }}"
 ```
 
+**Energie-Dashboard:** `sensor.vitodens_can_gasverbrauch_heizung_jahr` ist als
+Gasquelle eingetragen (`device_class: gas`, `state_class: total_increasing`, m³).
+Der Zähler läuft innerhalb des Jahres und springt am 1. Januar auf 0 – Home
+Assistant behandelt das als Zählerwechsel und rechnet weiter.
+
 Für die Kurve wird `plotly-graph-card` benötigt (HACS oder manuell unter
 `/config/www/community/plotly-graph-card/`), als Lovelace-Ressource vom Typ
 `JavaScript-Modul`.
