@@ -85,15 +85,23 @@ bleiben WLAN und API reaktionsfähig.
 | Pause zwischen Anfragen | 25 ms | schont den Bus |
 | Wiederholungen | – | kein Retry in derselben Runde (nur der nächste reguläre Zyklus) |
 
-### Schreibpfad (nur Heizkurve, DID 880)
+### Schreibpfad (Heizkurve, DID 880)
+
+Das 4-Byte-Feld hat drei Teile: Byte 0 = **Steigung** (/10), Byte 1 = **Niveau**
+(signed, 1 K), Byte 2–3 = **Fußpunkt** (int16 signed, /10).
+
+Schreiben immer per Read-Modify-Write:
 
 1. DID 880 vollständig lesen (4 Byte)
-2. Byte 0 ersetzen: `round(Steigung × 10)` (0,7 → `0x07`)
-3. die **4 Byte** per `0x2E` zurückschreiben
+2. **ein** Byte ersetzen – 0 für Steigung (`round(Steigung × 10)`, 0,7 → `0x07`),
+   1 für Niveau (`round(Niveau)`)
+3. alle **4 Byte** per `0x2E` zurückschreiben (die anderen Bytes bleiben unverändert)
 4. auf `0x6E` warten; `0x7F` (Negative Response) wird als Fehler mit NRC gemeldet
+5. 2 s später wird DID 880 erneut gelesen – damit ist im Number-Entity sichtbar,
+   ob der Wert wirklich angekommen ist
 
 Das ist exakt das Read-Modify-Write, das open3e bei Sub-DID-Schreibzugriffen macht.
-Maximal 3 Versuche mit 2 s Abstand, danach Abbruch.
+Maximal 3 Versuche mit 2 s Abstand, danach Abbruch. Der Fußpunkt ist nur lesbar.
 
 ---
 
@@ -115,7 +123,7 @@ Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
 | 548 | `EnergyConsumptionCentralHeating` | 24 | 6× int32 /10 | kWh | ro | 300 s |
 | 544 | `GasConsumptionCentralHeating` | 12 | 6× int16 /10 | m³ | ro | 300 s |
 | 1211 | `GeneratedCentralHeatingOutput` | 24 | 6× int32 /10 | kWh | ro | 300 s |
-| 880 | `MixerOneCircuitCentralHeatingCurve` | 4 | int8 /10, int8 signed, int16 signed | – | **rw** | 300 s |
+| 880 | `MixerOneCircuitCentralHeatingCurve` | 4 | Byte 0 Steigung /10, Byte 1 Niveau signed, Byte 2–3 Fußpunkt int16 /10 | – | **rw** | 300 s |
 | 929 | `GasType` | 1 | Enum (1 LLGas, 2 EGas, 3 Flüssiggas) | – | ro | 300 s |
 | 901 | `ServiceManagerIsRequired` | 1 | Byte ≠ 0 = Wartung | – | ro | 300 s |
 | 902 | `MalfunctionIdentification` | 1 | Byte ≠ 0 = Störung | – | ro | 300 s |
@@ -140,7 +148,7 @@ Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
 
 ---
 
-## Entitäten (54)
+## Entitäten (55)
 
 **Sensoren (30)** – Vorlauf, Vorlauf-Soll, Außentemperatur, Abgas, Wasserdruck,
 Betriebs-/Brennerstunden, Brennerstarts, je 4× Energie/Gas/Wärme (heute, 7 Tage,
@@ -154,7 +162,8 @@ CAN letzter Fehler, Schreibstatus, Bus-IDs (Diagnose)
 **Binärsensoren (6)** – Brennerflamme, Heizkreispumpe, Wartung erforderlich,
 Störung vorhanden, Backend verbunden, **CAN Daten aktuell**
 
-**Weitere (4)** – `number` Heizkurve 1 Steigung (0,2–3,5),
+**Weitere (5)** – `number` Heizkurve 1 Steigung (0,2–3,5),
+`number` Heizkurve 1 Niveau (−13…40 K),
 `switch` Schreiben freigeben, `button` CAN Bus neu starten,
 `button` Bus-Scan starten
 

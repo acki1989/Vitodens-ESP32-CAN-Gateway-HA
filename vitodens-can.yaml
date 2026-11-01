@@ -642,3 +642,24 @@ number:
             return;
           }
           vitodens::bus().request_curve(x);
+
+  - platform: template
+    name: "Heizkurve 1 Niveau"
+    id: n_heizkurve_niveau
+    unit_of_measurement: "K"
+    min_value: -13
+    max_value: 40
+    step: 1
+    mode: box
+    optimistic: false
+    icon: mdi:plus-minus-variant
+    update_interval: 15s
+    lambda: |-
+      return vitodens::bus().value(880, vitodens::bus().v.curve_level);
+    set_action:
+      - lambda: |-
+          if (!id(sw_write_enable).state) {
+            ESP_LOGW("vitodens_can", "Schreiben gesperrt - erst 'Schreiben freigeben' einschalten");
+            return;
+          }
+          vitodens::bus().request_curve_level(x);

@@ -51,6 +51,9 @@ static constexpr uint8_t MAX_FRAMES_PER_TICK = 16;
 // Wertebereich der Heizkurven-Steigung (wie in der HA-Entitaet)
 static constexpr float CURVE_MIN = 0.2f;
 static constexpr float CURVE_MAX = 3.5f;
+// Wertebereich des Niveaus (open3e-HA-Integration: -13..40, Schritt 1)
+static constexpr float CURVE_LEVEL_MIN = -13.0f;
+static constexpr float CURVE_LEVEL_MAX = 40.0f;
 
 // ---------------------------------------------------------------- Hilfsfunktionen
 static inline int16_t le_i16(const uint8_t *p) {
@@ -314,27 +317,32 @@ class VitodensBus {
     ESP_LOGI(TAG, "Adress-Scan gestartet (0x680..0x6EF)");
   }
 
-  // Heizkurve 1 Steigung setzen (DID 880, Sub-Feld Gradient, Faktor 10).
+  // Heizkurve 1 Steigung setzen (DID 880, Byte 0, Faktor 10).
   void request_curve(float value) {
-    if (this->write_state_ == WriteState::WRITING) {
-      ESP_LOGW(TAG, "Schreibvorgang laeuft noch - Anfrage ignoriert");
+    if (!this->write_begin_("Steigung"))
       return;
-    }
     if (value < CURVE_MIN || value > CURVE_MAX) {
-      this->write_status_ = "abgelehnt: ausserhalb 0,2..3,5";
-      ESP_LOGW(TAG, "Heizkurve %.1f ausserhalb des Bereichs - ignoriert", value);
+      this->write_reject_("Steigung ausserhalb 0,2..3,5");
       return;
     }
-    int g = (int) lroundf(value * 10.0f);
-    if (g < 0) g = 0;
-    if (g > 255) g = 255;
-    this->write_gradient_ = (uint8_t) g;
-    this->write_attempts_ = 0;
-    this->write_status_ = "laeuft";
-    this->write_next_try_ = millis();  // sofort erster Versuch
-    this->write_state_ = WriteState::NEED_READ;
-    ESP_LOGD(TAG, "Schreibwunsch Heizkurve: Rohwert %u", this->write_gradient_);
+    this->write_index_ = 0;
+    this->write_value_ = (uint8_t) lroundf(value * 10.0f);
+    this->write_kick_();
   }
+
+  // Heizkurve 1 Niveau setzen (DID 880, Byte 1, signed, Schritte von 1 K).
+  void request_curve_level(float value) {
+    if (!this->write_begin_("Niveau"))
+      return;
+    if (value < CURVE_LEVEL_MIN || value > CURVE_LEVEL_MAX) {
+      this->write_reject_("Niveau ausserhalb -13..40");
+      return;
+    }
+    this->write_index_ = 1;
+    this->write_value_ = (uint8_t) (int8_t) lroundf(value);
+    this->write_kick_();
+  }
+
   void recover() {
     if (!this->driver_ok_) {
       this->started_ = false;
@@ -426,7 +434,9 @@ class VitodensBus {
   uint32_t write_next_try_{0};
   uint8_t write_attempts_{0};
   std::string write_status_{"idle"};
-  uint8_t write_gradient_{0};
+  uint8_t write_index_{0};      // 0 = Steigung, 1 = Niveau
+  uint8_t write_value_{0};      // Rohwert, wie er in Byte <write_index_> gehoert
+  const char *write_label_{"Steigung"};
   uint8_t write_payload_[4]{0};
 
   uint8_t buf_[RX_BUF_SIZE]{};
@@ -513,6 +523,27 @@ class VitodensBus {
         return;
       }
     }
+  }
+
+  // ------------------------------------------------------- Schreibhilfen
+  bool write_begin_(const char *label) {
+    if (this->write_state_ == WriteState::WRITING) {
+      ESP_LOGW(TAG, "Schreibvorgang laeuft noch - Anfrage ignoriert");
+      return false;
+    }
+    this->write_label_ = label;
+    return true;
+  }
+  void write_reject_(const char *reason) {
+    this->write_status_ = std::string("abgelehnt: ") + reason;
+    ESP_LOGW(TAG, "Schreibwunsch verworfen: %s", reason);
+  }
+  void write_kick_() {
+    this->write_attempts_ = 0;
+    this->write_status_ = "laeuft";
+    this->write_next_try_ = millis();  // sofort erster Versuch
+    this->write_state_ = WriteState::NEED_READ;
+    ESP_LOGD(TAG, "Schreibwunsch %s: Rohwert %u", this->write_label_, (unsigned) this->write_value_);
   }
 
   // ------------------------------------------------------------ Senden
@@ -736,7 +767,7 @@ class VitodensBus {
           return;
         }
         memcpy(this->write_payload_, payload, 4);
-        this->write_payload_[0] = this->write_gradient_;
+        this->write_payload_[this->write_index_] = this->write_value_;
         this->write_state_ = WriteState::WRITING;
         if (!this->start_write_(880, this->write_payload_, 4)) {
           this->write_failed_("Senden fehlgeschlagen");
@@ -762,7 +793,7 @@ class VitodensBus {
 
     // WAIT_WRITE
     if (data[0] == 0x6E && be_u16(data + 1) == did) {
-      ESP_LOGI(TAG, "Heizkurve geschrieben (Steigung %.1f)", this->write_gradient_ / 10.0f);
+      ESP_LOGI(TAG, "Heizkurve geschrieben: %s Rohwert %u", this->write_label_, (unsigned) this->write_value_);
       this->write_state_ = WriteState::NONE;
       this->write_status_ = "ok";
       this->job_done_(did, true);
@@ -925,7 +956,8 @@ class VitodensBus {
         if (n < 4) return false;
         this->v.curve_gradient = d[0] / 10.0f;
         this->v.curve_level = (float) (int8_t) d[1];
-        this->v.curve_basepoint = (float) le_i16(d + 2);
+        // O3EInt16 hat standardmaessig scale=10 (anders als Int8/Int32)
+        this->v.curve_basepoint = (float) le_i16(d + 2) / 10.0f;
         return true;
 
       case 929:  // GasType

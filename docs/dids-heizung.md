@@ -54,13 +54,15 @@ Diagnose-Entity veröffentlicht (19,8 µA bei brennendem Brenner).
 
 | DID | open3e-Name | Byte | Inhalt | Zugriff |
 |---:|---|---:|---|---|
-| 880 | `MixerOneCircuitCentralHeatingCurve` | 4 | Byte 0: Steigung /10 (0,2…3,5), Byte 1: Niveau (signed), Byte 2–3: Fußpunkt (int16 signed) | **rw** |
+| 880 | `MixerOneCircuitCentralHeatingCurve` | 4 | Byte 0: Steigung /10 (0,2…3,5) · Byte 1: Niveau signed, 1 K (−13…40) · Byte 2–3: Fußpunkt int16 **/10** | **rw** (Steigung, Niveau) |
 
-**Schreibverfahren:** DID 880 vollständig lesen → Byte 0 ersetzen durch
-`round(Steigung × 10)` → alle 4 Byte per `0x2E` zurückschreiben. Genau das macht
+**Schreibverfahren:** DID 880 vollständig lesen → **ein** Byte ersetzen (0 = Steigung
+`round(Steigung × 10)`, 1 = Niveau `round(Niveau)`) → alle 4 Byte per `0x2E`
+zurückschreiben. Der Fußpunkt (Byte 2–3) ist nur lesbar. Genau das macht
 open3e bei Sub-DID-Schreibzugriffen auch. open3e führt das Feld als `acc="ro"`,
 die ECU akzeptiert den Schreibzugriff aber – 2026-11-01 mit einem Rundlauf
-0,4 → 0,5 → 0,4 am Gerät bestätigt (jeweils `0x6E`, Wert korrekt zurückgelesen).
+0,4 → 0,5 → 0,4 für die Steigung und mit unverändertem Wert für das Niveau bestätigt
+(jeweils `0x6E`, Wert korrekt zurückgelesen).
 
 ## Diagnose (lesen)
 
@@ -110,7 +112,8 @@ Heizung + Warmwasser**. Bei abgeschaltetem WW genügt jeweils der Heizungsanteil
   1346 (12), 544 (12), 548 und 1211 (24) sowie 265 (bis 122).
 - **Kurze Antworten** (1–6 Byte) kommen als Single Frame: 527, 364, 381, 880, 929,
   901, 902, 522, 1165, 593, 607, 602, 900.
-- **Nur ein Stellwert** ist implementiert (880). Weitere `rw`-Datenpunkte wären z. B.
+- **Zwei Stellwerte** auf DID 880: Steigung (Byte 0) und Niveau (Byte 1).
+  Der Fußpunkt wird gelesen, aber nicht geschrieben. Weitere `rw`-Datenpunkte wären z. B.
   396 (WW-Soll), 537/538 (externe Betriebsart) – nicht enthalten.
 - **Fehlerliste ohne Klartext:** DID 265 liefert Fehler-IDs (`0x1234`), keine Namen.
   Dafür müsste die komplette `Errors`-Enum mit auf das Gerät.
