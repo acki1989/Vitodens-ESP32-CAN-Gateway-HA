@@ -69,6 +69,26 @@ CANL        E3-Bus CANL (Pin L)
 - Stromversorgung: eigenes 5-V-Netzteil oder Step-down. Nicht gleichzeitig USB eines
   geerdeten Rechners und CAN-Masse anklemmen (Erdungsschleife).
 
+### Gehäuse (3D-Druck)
+
+Unter [`hardware/gehaeuse/`](hardware/gehaeuse/) liegen die Druckvorlagen für ein
+Gehäuse, in dem beide Platinen nebeneinander sitzen – Schraubklemme und USB-C
+zeigen nach vorn.
+
+| | |
+|---|---|
+| Außenmaß | 46,7 × 38,2 mm, 20 mm hoch (Boden 18 + Deckel 2) |
+| Aufnahme | ESP32-C3 SuperMini 22,5 × 18 mm, SN65HVD230 28 × 11 mm |
+| Aussparungen | Schraubklemme + Kabel (12,2 × 11,1 mm), USB-C (10,6 × 4,2 mm) |
+| Druck | 0,2 mm Layer, 3 Wände, 15–20 % Infill, keine Stützen |
+
+![Gehäuse für ESP32-C3 und SN65HVD230](hardware/gehaeuse/Vorschau.png)
+
+Die ESP-Tasche ist für die nackte Platine (1,6 mm) ausgelegt – vorhandene
+Stiftleisten vorher entfernen oder Kabel direkt anlöten. Maße, Montage und das
+parametrische Quellskript stehen in
+[`hardware/gehaeuse/README.md`](hardware/gehaeuse/README.md).
+
 ---
 
 ## Protokoll
