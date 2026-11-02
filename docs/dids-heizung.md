@@ -1,6 +1,6 @@
 # Vitodens E3 – Datenpunkte des Gateways (nur Heizung, ohne Warmwasser)
 
-Stand: **2026-11-01**, am Gerät verifiziert.
+Stand: **2026-11-02**, am Gerät verifiziert.
 
 Quelle der Byte-Layouts: `open3e/src/open3e/Open3Edatapoints.py`. Abgeglichen mit den
 aktiven Entitäten der HA-Integration `open3e` (Gerät `Vitodens-7470457349032224`) und
@@ -35,7 +35,7 @@ Datenpunkts sind **little-endian**.
 | 331 | `FlueGasTemperatureSensor` | 9 | wie 268 | °C | 42,6 |
 | 318 | `WaterPressureSensor` | 9 | wie 268 | bar | 1,4 |
 | 1346 | `HeatEngineStatistical` | 12 | 3× int32: Betriebsstunden, Brennerstunden, Starts | h / h / – | 25.906 / 9.809 / 10.002 |
-| 526 | `ModulationCurrentValue` | 2 | int16 /10 | % | 0,0 (Brenner aus) |
+| 526 | `ModulationCurrentValue` | 2 | int16 /10 | % | 14,2 (Brenner an) |
 | 548 | `EnergyConsumptionCentralHeating` | 24 | 6× int32 /10: heute, 7 Tage, Monat, Vormonat, Jahr, Vorjahr | kWh | 0,3 |
 | 544 | `GasConsumptionCentralHeating` | 12 | 6× int16 /10, gleiche Staffelung | m³ | 4,9 |
 | 1211 | `GeneratedCentralHeatingOutput` | 24 | 6× int32 /10, gleiche Staffelung | kWh | 49,0 |

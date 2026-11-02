@@ -1,30 +1,42 @@
 # Vitodens E3-CAN Gateway (ESP32-C3 + SN65HVD230)
 
-Ein ESP32-C3 liest eine Viessmann **Vitodens** direkt am internen E3-CAN-Bus aus und
-stellt die Werte in Home Assistant bereit — ohne open3e-Server, ohne Raspberry Pi,
-ohne Kabel zum PC. Ein schreibbarer Datenpunkt (Heizkurven-Steigung) ist enthalten.
+Ein ESP32-C3 liest eine **Viessmann Vitodens** direkt am internen E3-CAN-Bus aus und
+stellt die Werte in Home Assistant bereit – ohne open3e-Server, ohne Raspberry Pi,
+ohne Kabel zum PC. Zwei Stellwerte der Heizkurve lassen sich schreiben.
 
 Das Gerät spricht **UDS über ISO-TP** (Service `0x22` lesen, `0x2E` schreiben) mit
-250 kBit/s, also genau das Protokoll, das auch [open3e](https://github.com/open3e/open3e)
-verwendet. Die Byte-Layouts sind aus `Open3Edatapoints.py` übernommen.
-
-**Status**
-
-| | |
-|---|---|
-| Firmware | ESPHome 2026.10.1 / ESP-IDF 5.5.6, Flash 49,9 %, RAM 32,9 % |
-| Laufzeit am echten Bus | **seit 01.11.2026 im Einsatz** – 22 DIDs, 0 Fehler, 0 Timeouts |
-| Gegenprobe | Werte identisch mit der open3e-HA-Integration (Wasserdruck 1,4 bar, Heizkurve 0,4, Gateway-MAC, WLAN-IP) |
-| Schreibpfad DID 880 | über die open3e-Integration verifiziert (0,7 gesetzt und zurückgelesen); mit dieser Firmware noch nicht ausgelöst |
+250 kBit/s, also dasselbe Protokoll wie [open3e](https://github.com/open3e/open3e).
+Die Byte-Layouts stammen aus dessen Datenpunktliste.
 
 ---
 
-## Was es nicht ist
+## ⚠️ Benutzung auf eigene Verantwortung
 
-- Kein Ersatz für open3e. Es werden **22 ausgewählte Datenpunkte** gelesen, nicht die
-  komplette Datenbank (mehrere tausend DIDs).
-- Kein Bus-Master-Ersatz: solange das Gerät läuft, darf **kein** zweiter Tester
-  (open3e, Adapter am Unraid, ioBroker) auf demselben Bus Anfragen stellen.
+Dieses Projekt schreibt auf den **Steuerbus einer Heizungsanlage**. Fehler in
+Hardware, Firmware oder Konfiguration können die Heizung stören, in einen
+Störmodus bringen oder im schlimmsten Fall Sachschäden verursachen.
+
+- Wer es nachbaut, tut das **auf eigene Verantwortung** und auf eigenes Risiko.
+- Es gibt **keine Gewährleistung** und keinen Support-Anspruch – weder für die
+  Funktion noch für Folgeschäden.
+- Arbeiten an der Heizung dürfen nur Personen mit der nötigen Sachkenntnis
+  ausführen. Im Zweifel: Fachbetrieb.
+- Die Firmware ersetzt **keine** Herstellerwartung und keine Sicherheitsfunktion
+  der Anlage.
+- Keine Verbindung zu Viessmann oder zum open3e-Projekt.
+
+Wer diese Hinweise nicht akzeptiert, sollte den Aufbau nicht nachbauen.
+
+---
+
+## Status
+
+| | |
+|---|---|
+| Firmware | ESPHome 2026.10.1 / ESP-IDF 5.5.6, ca. 50 % Flash, 33 % RAM |
+| Laufzeit | seit 01.11.2026 dauerhaft im Einsatz, 23 Datenpunkte, 0 Fehler |
+| Letzte Dauerprüfung | 02.11.2026: 11.518 Abfragen ohne eine einzige Fehlantwort |
+| Schreibpfad | Rundlauf 0,4 → 0,5 → 0,4 am Gerät bestätigt, jeweils `0x6E` |
 
 ---
 
@@ -44,14 +56,16 @@ GND         GND     gemeinsame Masse mit dem CAN-Bus ist Pflicht
 CTX         GPIO4
 CRX         GPIO5
 Rs          GND     High-Speed-Modus (manche Module: Jumper)
-CANH        E3-Bus CANH (gelbe Buchse am Gerät)
-CANL        E3-Bus CANL
+CANH        E3-Bus CANH (gelbe Buchse 91, Pin H)
+CANL        E3-Bus CANL (Pin L)
 ```
 
-- **120 Ω** nur bestücken, wenn der Adapter physikalisch am Busende sitzt. Zwei
-  Abschlusswiderstände zu viel legen den Bus lahm (äußert sich als Bus-Off).
-- Freie GPIOs auf dem C3: 0–10, 20, 21. **Nicht** verwenden: 18/19 (USB),
-  11–17 (Flash), 2/8/9 (Strapping).
+- **Busmasse** gehört an den GND-Pin der Buchse 91 (Beschriftung `L / GND / H`).
+  Ohne sie fehlt dem Transceiver der Bezug: der TX-Fehlerzähler steigt, RX bleibt 0.
+- **120 Ω** nur bestücken, wenn der Adapter am Busende sitzt. Zwei Widerstände zu
+  viel legen den Bus lahm (äußert sich als Bus-Off).
+- Freie GPIOs am C3: 0–10, 20, 21. **Nicht** verwenden: 18/19 (USB), 11–17 (Flash),
+  2/8/9 (Strapping).
 - Stromversorgung: eigenes 5-V-Netzteil oder Step-down. Nicht gleichzeitig USB eines
   geerdeten Rechners und CAN-Masse anklemmen (Erdungsschleife).
 
@@ -64,57 +78,53 @@ ESP32 ── 0x680 ──> ECU (HMUMASTER)
       <─ 0x690 ──
 ```
 
-- **250 kBit/s**, 11-Bit-IDs, klassisches CAN (kein CAN-FD)
-- UDS: `0x22` ReadDataByIdentifier, `0x2E` WriteDataByIdentifier
-- Transport: **ISO-TP**. Anfragen passen immer in ein Single Frame (≤ 7 Byte);
-  Antworten bis 24 Byte kommen als First Frame + Consecutive Frames.
-  Nach dem First Frame sendet der ESP32 einen Flow-Control-Frame
-  (`0x30`, Blocksize 0, STmin 0) und sammelt dann alle Frames ein.
+| | |
+|---|---|
+| Bus | E3-CAN, 250 kBit/s, klassisches CAN (kein CAN-FD) |
+| Anfrage | `0x680`, Antwort `0x690` (ECU-Adresse + `0x10`) |
+| Weitere ECUs | `0x684`/`0x694` und `0x688`/`0x698` antworten ebenfalls (per Scan bestätigt) |
+| Empfangsfilter | `0x690…0x69F` |
+| Dienste | UDS `0x22` (lesen), `0x2E` (schreiben), ISO-TP als Transport |
+
+**Endianness – die häufigste Fehlerquelle:** Die DID-Wiederholung in der Antwort ist
+**big-endian** (`62 01 0C …` für DID 268), die Nutzdaten *innerhalb* eines
+Datenpunkts sind **little-endian**.
 
 ### Ablauf
 
 Die Klasse arbeitet **nicht blockierend**: ein 20-ms-Intervall ruft `loop()`, das pro
-Aufruf höchstens einen Schritt macht (Senden, Frames einsammeln, auswerten). Dadurch
-bleiben WLAN und API reaktionsfähig.
+Aufruf höchstens einen Schritt macht. WLAN und API bleiben dadurch reaktionsfähig.
 
 | Parameter | Wert | Bedeutung |
 |---|---|---|
-| Abfragetakt | 30 s | 7 Messwerte (Temperaturen, Druck, Flamme, Pumpe) |
+| Abfragetakt | 30 s | 8 Messwerte (Temperaturen, Druck, Flamme, Pumpe, Modulation) |
 | Abfragetakt | 300 s | 15 Werte (Statistik, Diagnose, Gateway) |
-| Antwort-Timeout | 400 ms | danach gilt der DID als fehlgeschlagen, nächster Versuch in 10 s |
+| Antwort-Timeout | 400 ms | danach gilt der DID als fehlgeschlagen, neuer Versuch in 10 s |
 | Pause zwischen Anfragen | 25 ms | schont den Bus |
-| Wiederholungen | – | kein Retry in derselben Runde (nur der nächste reguläre Zyklus) |
+| Log-Bremse | 60 s je DID | Zähler laufen exakt weiter, nur das Log wird gedrosselt |
 
 ### Schreibpfad (Heizkurve, DID 880)
 
 Das 4-Byte-Feld hat drei Teile: Byte 0 = **Steigung** (/10), Byte 1 = **Niveau**
 (signed, 1 K), Byte 2–3 = **Fußpunkt** (int16 signed, /10).
 
-Schreiben immer per Read-Modify-Write:
-
 1. DID 880 vollständig lesen (4 Byte)
-2. **ein** Byte ersetzen – 0 für Steigung (`round(Steigung × 10)`, 0,7 → `0x07`),
-   1 für Niveau (`round(Niveau)`)
-3. alle **4 Byte** per `0x2E` zurückschreiben (die anderen Bytes bleiben unverändert)
+2. **ein** Byte ersetzen – 0 für Steigung (`round(Steigung × 10)`), 1 für Niveau (`round(Niveau)`)
+3. alle **4 Byte** per `0x2E` zurückschreiben (die anderen bleiben unverändert)
 4. auf `0x6E` warten; `0x7F` (Negative Response) wird als Fehler mit NRC gemeldet
-5. 2 s später wird DID 880 erneut gelesen – damit ist im Number-Entity sichtbar,
-   ob der Wert wirklich angekommen ist
+5. 2 s später wird DID 880 erneut gelesen – damit ist sichtbar, ob der Wert ankam
 
-Das ist exakt das Read-Modify-Write, das open3e bei Sub-DID-Schreibzugriffen macht.
 Maximal 3 Versuche mit 2 s Abstand, danach Abbruch. Der Fußpunkt ist nur lesbar.
 
 ---
 
 ## Datenpunkte (23)
 
-Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
-[`docs/dids-heizung.md`](docs/dids-heizung.md).
-
 | DID | open3e-Name | Byte | Inhalt | Einheit | Zugriff | Takt |
 |---:|---|---:|---|---|---|---|
 | 268 | `FlowTemperatureSensor` | 9 | 4× int16 /10 (Ist/Min/Max/Mittel) + Status | °C | ro | 30 s |
-| 527 | `FlowTemperatureTargetSetpoint` | 2 | int16 /10 | °C | ro | 30 s |
 | 526 | `ModulationCurrentValue` | 2 | int16 /10 | % | ro | 30 s |
+| 527 | `FlowTemperatureTargetSetpoint` | 2 | int16 /10 | °C | ro | 30 s |
 | 274 | `OutsideTemperatureSensor` | 9 | wie 268 | °C | ro | 30 s |
 | 331 | `FlueGasTemperatureSensor` | 9 | wie 268 | °C | ro | 30 s |
 | 318 | `WaterPressureSensor` | 9 | wie 268 | bar | ro | 30 s |
@@ -124,12 +134,12 @@ Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
 | 548 | `EnergyConsumptionCentralHeating` | 24 | 6× int32 /10 | kWh | ro | 300 s |
 | 544 | `GasConsumptionCentralHeating` | 12 | 6× int16 /10 | m³ | ro | 300 s |
 | 1211 | `GeneratedCentralHeatingOutput` | 24 | 6× int32 /10 | kWh | ro | 300 s |
-| 880 | `MixerOneCircuitCentralHeatingCurve` | 4 | Byte 0 Steigung /10, Byte 1 Niveau signed, Byte 2–3 Fußpunkt int16 /10 | – | **rw** | 300 s |
+| 880 | `MixerOneCircuitCentralHeatingCurve` | 4 | Byte 0 Steigung /10, Byte 1 Niveau, Byte 2–3 Fußpunkt /10 | – | **rw** | 300 s |
 | 929 | `GasType` | 1 | Enum (1 LLGas, 2 EGas, 3 Flüssiggas) | – | ro | 300 s |
 | 901 | `ServiceManagerIsRequired` | 1 | Byte ≠ 0 = Wartung | – | ro | 300 s |
 | 902 | `MalfunctionIdentification` | 1 | Byte ≠ 0 = Störung | – | ro | 300 s |
 | 522 | `ServiceDateNext` | 4 | Tag, Monat, 2000+Jahr, Status | Datum | ro | 300 s |
-| 265 | `ErrorDtcList` | 122 | uint16 Anzahl + n× 12 Byte (Enum, Zeitstempel, 2× raw) | – | ro | 300 s |
+| 265 | `ErrorDtcList` | 122 | uint16 Anzahl + n× 12 Byte | – | ro | 300 s |
 | 1165 | `BackendConnectionStatus` | 1 | 3 = verbunden | – | ro | 300 s |
 | 593 | `GatewayMac` | 6 | MAC des Internetmoduls | – | ro | 300 s |
 | 607 | `GatewayRemoteIp` | 20 | 5× IPv4, erstes = WLAN-IP | – | ro | 300 s |
@@ -138,35 +148,27 @@ Vollständige Referenz mit Byte-Layouts, Adressierung und Beispielwerten:
 
 ### Abweichungen von den open3e-Metadaten
 
-- **DID 318**: open3e deklariert `hPa`, geliefert wird aber der Bar-Wert (1,4).
-  Hier als `bar` veröffentlicht – passend zur HA-Integration.
-- **DID 880**: open3e führt das Feld als `acc="ro"`, die HA-Integration schreibt es
-  aber. Am Gerät wurde bestätigt: der Schreibzugriff wird akzeptiert.
+- **DID 318**: open3e deklariert `hPa`, geliefert wird der Bar-Wert (1,4) – hier als `bar`.
+- **DID 880**: open3e führt das Feld als `acc="ro"`, die ECU akzeptiert Schreibzugriffe aber.
 - **DID 593/607/602/900/1165** beschreiben das **eingebaute Viessmann-Internetmodul**
   (MAC-OUI `B8:74:24` = Viessmann Elektronik), nicht dieses Gateway.
-- **DID 265**: hier werden nur Anzahl und Fehler-IDs (`0x1234`) ausgegeben, nicht die
-  Klartextnamen – dafür müsste die komplette `Errors`-Enum mit auf das Gerät.
+- **DID 265**: hier nur Anzahl und Fehler-IDs, keine Klartextnamen – dafür müsste die
+  komplette `Errors`-Enum mit auf das Gerät.
+
+Vollständige Referenz mit Beispielwerten: [`docs/dids-heizung.md`](docs/dids-heizung.md).
 
 ---
 
 ## Entitäten (58)
 
-**Sensoren (31)** – Vorlauf, Vorlauf-Soll, Außentemperatur, Abgas, Wasserdruck, **Modulation**,
-Betriebs-/Brennerstunden, Brennerstarts, je 4× Energie/Gas/Wärme (heute, 7 Tage,
-Monat, Jahr), Ionisationsstrom, Pumpen-Soll/-Ist, Heizkurve Niveau/Fußpunkt,
-Fehleranzahl, Gateway-WLAN-Signal, Datenalter, CAN-Anfragen-OK, CAN-Fehler
-
-**Textsensoren (14)** – Sensorstatus (Vorlauf, Außen, Abgas, Druck), Gastyp,
-Servicetermin, Fehlerliste, Gateway-MAC/-IP/-Netzwerkstatus, CAN-Bus-Status,
-CAN letzter Fehler, Schreibstatus, Bus-IDs (Diagnose)
-
-**Binärsensoren (6)** – Brennerflamme, Heizkreispumpe, Wartung erforderlich,
-Störung vorhanden, Backend verbunden, **CAN Daten aktuell**
-
-**Weitere (7)** – `number` Heizkurve 1 Steigung (0,2–3,5),
-`number` Heizkurve 1 Niveau (−13…40 K), `number` Entwurf Neigung,
-`number` Entwurf Niveau, `switch` Schreiben freigeben,
-`button` CAN Bus neu starten, `button` Bus-Scan starten
+| Gruppe | Anzahl | Inhalt |
+|---|---|---|
+| Sensoren | 31 | Temperaturen, Druck, Modulation, Betriebs-/Brennerstunden, Starts, je 4× Energie/Gas/Wärme, Ionisationsstrom, Pumpenwerte, Heizkurve, Fehleranzahl, Gateway-Diagnose, Datenalter, CAN-Zähler |
+| Textsensoren | 14 | Sensorstatus (4×), Gastyp, Servicetermin, Fehlerliste, Gateway-MAC/-IP/-Netz, CAN-Status, letzter Fehler, Schreibstatus, Bus-IDs |
+| Binärsensoren | 6 | Brennerflamme, Heizkreispumpe, Wartung, Störung, Backend, CAN-Daten-aktuell |
+| Zahlen | 4 | Heizkurve Steigung/Niveau (Gerät), Neigung/Niveau (Entwurf) |
+| Buttons | 2 | CAN-Bus neu starten, Bus-Scan starten |
+| Schalter | 1 | Schreiben freigeben |
 
 ### Verhalten bei veralteten Daten
 
@@ -175,8 +177,7 @@ Jeder DID merkt sich den Zeitpunkt der letzten erfolgreichen Antwort. Ist er äl
 
 - numerische Sensoren senden **nichts** mehr (der letzte Wert bleibt stehen)
 - Textsensoren zeigen `veraltet`
-- `CAN Daten aktuell` geht auf *aus*, `Datenalter` zählt die Sekunden seit der letzten
-  Antwort
+- `CAN Daten aktuell` geht auf *aus*, `Datenalter` zählt die Sekunden
 
 Bewusst **kein** `NAN`: Home Assistant wirft bei Sensoren mit `device_class`/`state_class`
 einen `ValueError` („non-finite value") und protokolliert das bei jedem Update.
@@ -192,10 +193,9 @@ einen `ValueError` („non-finite value") und protokolliert das bei jedem Update
 | `vitodens-can.yaml` | ESPHome-Konfigurationsordner |
 | `vitodens-uds.h` | derselbe Ordner (wird per `includes:` eingebunden) |
 
-`secrets.yaml` benötigt: `wifi_ssid`, `wifi_password`, `api_encryption_key`,
-`web_password` (letzteres nur, wenn der Webserver aktiviert wird).
+`secrets.yaml` benötigt: `wifi_ssid`, `wifi_password`, `api_encryption_key`.
 
-### 2. Kompilieren und flashen
+### 2. Bauen und flashen
 
 ```bash
 esphome config vitodens-can.yaml     # Schema prüfen
@@ -207,9 +207,8 @@ Oder über den ESPHome Device Builder: Gerät `vitodens-can` → Install.
 
 ### 3. Home Assistant
 
-Das Gerät meldet sich per ESPHome-API; nach dem Hinzufügen erscheinen die 52 Entitäten.
-Die Namen sind deutsch; die endgültigen Entitäts-IDs vergibt Home Assistant beim
-Anlegen (Beispiel: `sensor.vitodens_can_vorlauftemperatur`).
+Das Gerät meldet sich per ESPHome-API; nach dem Hinzufügen erscheinen die 58 Entitäten
+mit deutschen Namen. Die endgültigen Entitäts-IDs vergibt Home Assistant beim Anlegen.
 
 ---
 
@@ -221,32 +220,30 @@ substitutions:
   can_rx_pin: "5"     # CRX des Transceivers
 ```
 
-Abfragetakte, Timeouts und das Frischefenster stehen als Konstanten am Anfang von
-`vitodens-uds.h`:
+Takte, Timeouts und Grenzen stehen als Konstanten am Anfang von `vitodens-uds.h`:
 
 ```cpp
-static constexpr uint32_t REQUEST_TIMEOUT_MS = 400;
-static constexpr uint32_t GAP_MS            = 25;
-static constexpr uint32_t FAST_PERIOD_MS    = 30000;
-static constexpr uint32_t SLOW_PERIOD_MS    = 300000;
+static constexpr uint32_t REQUEST_TIMEOUT_MS      = 400;
+static constexpr uint32_t GAP_MS                  = 25;
+static constexpr uint32_t FAST_PERIOD_MS          = 30000;
+static constexpr uint32_t SLOW_PERIOD_MS          = 300000;
 ```
 
-Weitere DIDs ergänzen: Eintrag in `jobs_[]` (Periode wählen) und ein `case` in
-`decode_()`.
+Weiteren Datenpunkt ergänzen: Eintrag in `jobs_[]` (Periode wählen), `case` in
+`decode_()`, Feld in `Values`, Entität in der YAML.
 
 ---
 
-## Sicherheit und Betrieb
+## Betrieb und Sicherheit
 
 1. **Nur ein Tester am Bus.** Vor dem Start `open3e` (Docker/Add-on) stoppen. Zwei
    Tester erzeugen Kollisionen und falsche Werte.
 2. **Schreiben ist standardmäßig gesperrt.** Der Schalter *Schreiben freigeben* steht
    nach jedem Neustart auf *aus* (`restore_mode: ALWAYS_OFF`). Erst einschalten, dann
-   die Heizkurve ändern. So kann auch ein Sprachassistent nichts verstellen.
-3. **Wertebereich** der Heizkurven-Steigung: 0,2–3,5. Die Firmware rundet auf
-   Zehntel und schreibt nur Byte 0 des Datenpunkts.
-4. Diese Firmware ersetzt **keine** Herstellerwartung und keine Sicherheitsfunktionen
-   der Heizung.
+   die Heizkurve ändern – so kann auch ein Sprachassistent nichts verstellen.
+3. **Wertebereich** der Steigung 0,2–3,5, des Niveaus −13…40 K. Die Firmware prüft
+   beides selbst und lehnt Werte außerhalb ab, statt sie zu klemmen.
+4. **Nicht als Ersatz für Herstellerwartung** oder Sicherheitsfunktionen verwenden.
 
 ---
 
@@ -260,101 +257,39 @@ Weitere DIDs ergänzen: Eintrag in `jobs_[]` (Periode wählen) und ein `case` in
 | `Datenalter` | Sekunden seit der letzten gültigen Antwort |
 | `CAN Daten aktuell` | mindestens ein Wert frisch |
 | `Schreibstatus` | `idle` / `laeuft` / `Versuch 2: …` / `abgebrochen: …` / `ok` |
-| `Bus-IDs (Diagnose)` | Ergebnis des Adress-Scans: welche ECU auf DID 256 antwortet |
-| Button `Bus-Scan starten` | klopft `0x680..0x6EF` mit DID 256 ab (~20 s), Ergebnis im Log und in `Bus-IDs` |
+| `Bus-IDs (Diagnose)` | Ergebnis des Adress-Scans |
+| Button `Bus-Scan starten` | klopft `0x680..0x6EF` mit DID 256 ab (~20 s) |
 
 Häufige Negative Response Codes:
 
 | NRC | Bedeutung | typische Ursache |
 |---|---|---|
-| `0x22` | conditionsNotCorrect | falsche Betriebsart / Zündung aus |
+| `0x22` | conditionsNotCorrect | falsche Betriebsart |
 | `0x31` | requestOutOfRange | DID existiert an dieser ECU nicht |
 | `0x33` | securityAccessDenied | Schreibzugriff gesperrt |
 | `0x78` | responsePending | Gerät braucht länger (kein Fehler) |
 
-`Request timed out` bei **allen** DIDs deutet auf Verkabelung, Bitrate oder fehlende
-Masse – nicht auf die Firmware. Der Bus bleibt dabei still, das Gerät sendet aber
-weiter Anfragen und geht nach einiger Zeit in Bus-Off; `check_bus_()` erholt sich
-alle 5 s selbst.
-
----
-
-## Stolperfallen (aus der Entwicklung, alle verifiziert)
-
-1. **Die DID-Wiederholung in einer UDS-Antwort ist big-endian.** Dieser Fehler hat
-   am längsten gekostet: `62 01 0C …` für DID 268 wurde mit `le_u16()` als `0x0C01`
-   gelesen, passte nie zur angefragten DID und **jede gültige Antwort wurde
-   verworfen** – sichtbar nur als Timeout, obwohl ACK und Antwort kamen.
-   ```cpp
-   be_u16(data + 1) == did   // richtig: (data[1] << 8) | data[2]
-   ```
-   Nutzdaten *innerhalb* eines Datenpunkts sind dagegen little-endian.
-2. **`driver/twai.h` fehlt bei ESPHome 2026.10.** ESPHome schließt die IDF-Treiber aus.
-   Beide Komponenten müssen im Framework-Abschnitt wieder aktiviert werden:
-   ```yaml
-   framework:
-     type: esp-idf
-     advanced:
-       include_builtin_idf_components:
-         - driver           # Legacy-Shim mit driver/twai.h
-         - esp_driver_twai  # eigentliche Implementierung (IDF 5.5)
-   ```
-3. **`globals` mit eigenem C++-Typ scheitert.** ESPHome generiert die Global-Speicher
-   *vor* dem `includes:`-Block, der Typ ist dort noch unbekannt. Lösung: Zugriffsfunktion
-   mit statischer Instanz (`vitodens::bus()`).
-4. **`NAN` an Home-Assistant-Sensoren ist keine gute Idee** (siehe oben). „Unbekannt"
-   lässt sich damit nicht erzeugen – nur HA-Fehler.
-5. **Ein Timeout ohne `job_done_` blockiert alles.** Bleibt der Job „überfällig", fragt
-   der Scheduler denselben DID im 25-ms-Takt erneut und kommt nie zu den anderen.
-   Gleiches gilt für den NRC-Pfad.
-6. **Schreibzustand muss bei Abbrüchen mit aufgeräumt werden.** Wird nur der
-   Empfangszustand zurückgesetzt (z. B. bei Bus-Recovery), bleibt der Schreibvorgang
-   „laufend" und `request_curve()` verweigert dauerhaft.
-7. **`total_increasing` nur für monotone Werte.** Bei rollierenden Fenstern
-   (7 Tage, Monat, Jahr) interpretiert Home Assistant jeden Rückgang als
-   Zählerrücksetzung und bucht Phantomverbrauch. `measurement` ist dort richtig –
-   aber nicht zusammen mit `device_class: energy`/`gas` (HA lehnt die Kombination ab).
-8. **Diagnose per Adress-Scan.** Wenn auf eine Anfrage nur Timeouts kommen, obwohl
-   der Bus ACKs liefert: alle ECU-Adressen `0x680..0x6EF` mit DID 256
-   (`BusIdentification`, bei E3-Geräten immer vorhanden) abklopfen. Genau so wurde
-   der Big-Endian-Fehler gefunden – und bestätigt, dass `0x680`, `0x684` und `0x688`
-   alle antworten. Der Scan läuft nicht beim Boot (kostet 20 s), sondern über den
-   Button **Bus-Scan starten**.
-
----
-
-## Grenzen und offene Punkte
-
-- Ziel-ECU ist `0x680` (Antwort `0x690`). Der Adress-Scan zeigt, dass `0x684` und
-  `0x688` ebenfalls antworten, und der Empfangsfilter akzeptiert `0x690..0x69F` –
-  angebunden ist aber nur `0x680`. Für weitere ECUs müsste die Adresse pro DID
-  konfigurierbar werden.
-- Fehlerliste ohne Klartextnamen (siehe DID 265).
-- Nur ein Stellwert. Weitere `rw`-DIDs (z. B. 396 Warmwasser-Soll, 537/538
-  Betriebsart) sind nicht implementiert.
-- Kein Tester-Present, keine Session-Steuerung – bisher nicht nötig, da alle
-  Lesezugriffe in der Default-Session funktionieren.
-- Keine Langzeit-Statistik für Verbrauchswerte (bewusst `measurement`).
+`Timeout` bei **allen** DIDs heißt: gesendet und quittiert, aber keine Antwort –
+Verdacht auf falsche ECU-Adresse (Adress-Scan nutzen). `Senden fehlgeschlagen` bei
+allen DIDs heißt: niemand quittiert – Verkabelung, Masse oder Bitrate prüfen.
 
 ---
 
 ## Home-Assistant-Begleitung (optional)
-
-Zum Gateway gehören auf HA-Seite:
 
 **Dashboard `heizung-kennlinie`** mit drei Views:
 
 | View | Inhalt |
 |---|---|
 | Heizkurve | Plotly-Kurve (Ist/Entwurf), Stützpunkt-Tabelle, Entwurfs-Tasten, Gerätewerte, Übernehmen/Verwerfen |
-| Verbrauch | Gasverbrauch pro Tag (Statistik, `max`), Brenner/Pumpe 24 h |
+| Verbrauch | Gasverbrauch pro Tag (Statistik `max`), Brenner/Pumpe 24 h, Tageswerte |
 | Brenner | Außen/Vorlauf/Modulation über 24 h (zwei Y-Achsen), Flamme 7 Tage, Starts/Tag |
 
 **Skripte** (UI-Skripte, nicht YAML):
 
 | Skript | Aufgabe |
 |---|---|
-| `heizkurve_uebernehmen` | schreibt Entwurf auf das Gerät, prüft vorher die Schreibfreigabe |
+| `heizkurve_uebernehmen` | schreibt den Entwurf aufs Gerät, prüft vorher die Schreibfreigabe |
 | `heizkurve_verwerfen` | setzt den Entwurf auf die Gerätewerte |
 | `heizkurve_neigung_schritt` | ±0,1 je Schritt, geklemmt auf 0,2…3,5 |
 | `heizkurve_niveau_schritt` | ±1 je Schritt, geklemmt auf −13…40 |
@@ -380,27 +315,82 @@ sensor:
     end: "{{ now() }}"
 ```
 
-**Energie-Dashboard:** `sensor.vitodens_can_gasverbrauch_heizung_jahr` ist als
-Gasquelle eingetragen (`device_class: gas`, `state_class: total_increasing`, m³).
-Der Zähler läuft innerhalb des Jahres und springt am 1. Januar auf 0 – Home
-Assistant behandelt das als Zählerwechsel und rechnet weiter.
+**Energie-Dashboard:** `sensor.vitodens_can_gasverbrauch_heizung_jahr` ist als Gasquelle
+eingetragen (`device_class: gas`, `state_class: total_increasing`, m³). Der Zähler läuft
+innerhalb des Jahres und springt am 1. Januar auf 0 – Home Assistant behandelt das als
+Zählerwechsel und rechnet weiter.
+
+Die Screenshots unter `docs/` zeigen die ViCare-Referenzkurve (Neigung 0,4 und 0,8
+bei Niveau 3 bzw. 4) sowie die gefahrenen Raumtemperaturen – daran wurde das
+Kurvenmodell kalibriert.
 
 Für die Kurve wird `plotly-graph-card` benötigt (HACS oder manuell unter
 `/config/www/community/plotly-graph-card/`), als Lovelace-Ressource vom Typ
 `JavaScript-Modul`.
+
+---
+
+## Stolperfallen (alle selbst durchlaufen)
+
+1. **Die DID-Wiederholung in einer UDS-Antwort ist big-endian.** Der teuerste Fehler:
+   `62 01 0C …` für DID 268 wurde mit `le_u16()` als `0x0C01` gelesen, passte nie und
+   **jede gültige Antwort wurde verworfen** – sichtbar nur als Timeout, obwohl ACK und
+   Antwort kamen. Nutzdaten *innerhalb* eines Datenpunkts sind dagegen little-endian.
+2. **`driver/twai.h` fehlt bei ESPHome 2026.10.** ESPHome schließt die IDF-Treiber aus,
+   beide Komponenten müssen wieder aktiviert werden:
+   ```yaml
+   framework:
+     type: esp-idf
+     advanced:
+       include_builtin_idf_components:
+         - driver           # Legacy-Shim mit driver/twai.h
+         - esp_driver_twai  # eigentliche Implementierung (IDF 5.5)
+   ```
+3. **`globals` mit eigenem C++-Typ scheitert.** ESPHome generiert die Global-Speicher
+   *vor* dem `includes:`-Block, der Typ ist dort noch unbekannt. Lösung: Zugriffsfunktion
+   mit statischer Instanz (`vitodens::bus()`).
+4. **`NAN` an Home-Assistant-Sensoren ist keine gute Idee** – siehe „veraltete Daten".
+5. **Ein Timeout ohne `job_done_` blockiert alles.** Bleibt der Job „überfällig", fragt
+   der Scheduler denselben DID im 25-ms-Takt erneut und kommt nie zu den anderen.
+6. **Schreibzustand bei Abbrüchen aufräumen.** Wird nur der Empfangszustand
+   zurückgesetzt (Bus-Recovery, verlorenes Frame), bleibt der Schreibvorgang „laufend".
+7. **`total_increasing` nur für monotone Werte.** Bei rollierenden Fenstern (7 Tage,
+   Monat, Jahr) interpretiert HA jeden Rückgang als Zählerrücksetzung und bucht
+   Phantomverbrauch – dort `measurement`, aber nie zusammen mit `device_class: energy`.
+8. **`O3EInt16` hat in open3e die Standard-Skalierung 10**, `O3EInt8`/`O3EInt32` dagegen 1.
+   Wer den Fußpunkt ohne `/10` liest, bekommt −300 statt −30 °C.
+9. **Diagnose per Adress-Scan.** Kommen auf Anfragen nur Timeouts, obwohl der Bus ACKs
+   liefert: alle Adressen `0x680..0x6EF` mit DID 256 (`BusIdentification`) abklopfen.
+   Genau so wurde Fehler 1 gefunden – und bestätigt, dass `0x680`, `0x684` und `0x688`
+   alle antworten.
+
+---
+
+## Grenzen und offene Punkte
+
+- Ziel-ECU ist `0x680`. `0x684`/`0x688` antworten zwar, sind aber nicht angebunden –
+  dafür müsste die ECU-Adresse pro DID konfigurierbar werden.
+- Fehlerliste ohne Klartextnamen (siehe DID 265).
+- Zwei Stellwerte auf DID 880 (Steigung, Niveau); der Fußpunkt wird nur gelesen.
+  Weitere `rw`-Datenpunkte wären z. B. 396 (WW-Soll), 537/538 (externe Betriebsart).
+- Kein Tester-Present, keine Session-Steuerung – für `0x22`/`0x2E` im Default-Session
+  nicht nötig.
+- Der Gaszähler ist der Jahreswert; ein jahresübergreifender Zähler existiert nicht.
+
+---
 
 ## Verifikation
 
 | Prüfung | Ergebnis |
 |---|---|
 | Byte-Layouts | gegen `Open3Edatapoints.py` abgeglichen |
-| C++ | Kompilat mit `-Wall -Wextra` gegen IDF-Stubs fehlerfrei |
-| Firmware | mehrfach mit ESPHome 2026.10.1 / IDF 5.5.6 gebaut |
-| Laufzeit am Gerät | **bestanden** – 22 DIDs, 0 Fehler, 0 Timeouts |
-| Plausibilität | Vorlauf 33,5 °C, Außen 10,9 °C, Abgas 31,9 °C, Wasserdruck 1,4 bar, Betriebsstunden 25.906 h, Brennerstarts 10.002, Flamme an, Pumpe 60 % |
-| Gegenprobe open3e | identische Werte für Wasserdruck (1,4), Heizkurve (0,4), Gateway-MAC (`B8-74-24-37-D5-98`), WLAN-IP (`192.168.178.80`), Wartung (an) |
-| Schreibbarkeit DID 880 | über die open3e-HA-Integration bestätigt (0,7 gesetzt, zurückgelesen, gehalten) |
-| Schreiben mit dieser Firmware | **bestanden** – idempotenter Test mit unverändertem Wert 0,4: ECU antwortet `0x6E`, `Schreibstatus` = `ok`, 0 CAN-Fehler. Wertänderung mit Rückkehr noch nicht ausgelöst. |
+| C++ | `g++ -Wall -Wextra` gegen IDF-Stubs, ohne Warnungen |
+| Firmware | ESPHome 2026.10.1 / IDF 5.5.6, wiederholt gebaut und per OTA geflasht |
+| Laufzeit | 23 DIDs, 0 Fehler, 0 Timeouts über Nacht (11.518 Abfragen) |
+| Plausibilität | Vorlauf 36,7 °C · außen 5,5 °C · Modulation 14,2 % · Druck 1,5 bar · Betriebsstunden 25.921 h |
+| Gegenprobe open3e | identische Werte für Druck (1,4), Heizkurve (0,4), Gateway-MAC, WLAN-IP, Wartung |
+| Schreibpfad | Rundlauf 0,4 → 0,5 → 0,4, jeweils `0x6E` und korrekt zurückgelesen |
+| Statistik | Tagesgas 01.11. 5,9 m³ / 02.11. 0,8 m³; 8 Brennerstarts, ~37 min je Lauf |
 
 ---
 
@@ -409,12 +399,13 @@ Für die Kurve wird `plotly-graph-card` benötigt (HACS oder manuell unter
 Apache License 2.0 – siehe [`LICENSE`](LICENSE) und [`NOTICE`](NOTICE).
 Copyright 2026 acki1989.
 
-Die Datenpunktdefinitionen (DID-Nummern, Byte-Layouts, Skalierungsfaktoren,
-Enum-Werte) stammen aus [open3e](https://github.com/open3e/open3e) (Apache-2.0).
-Es wurde kein Quellcode von open3e übernommen.
+Die Datenpunktdefinitionen (DID-Nummern, Byte-Layouts, Skalierungen, Enum-Werte)
+stammen aus [open3e](https://github.com/open3e/open3e) (Apache-2.0). Es wurde kein
+Quellcode von open3e übernommen.
 
 ## Haftung
 
-Code und Dokumentation ohne Gewähr. Die Benutzung erfolgt auf eigenes Risiko,
-insbesondere Schreibzugriffe auf eine Heizungsanlage. Keine Verbindung zu
-Viessmann oder zum open3e-Projekt.
+Code und Dokumentation ohne Gewähr. Die Benutzung erfolgt **auf eigene Verantwortung
+und auf eigenes Risiko**, insbesondere Schreibzugriffe auf eine Heizungsanlage.
+Keine Verbindung zu Viessmann oder zum open3e-Projekt. Für Schäden, die aus dem
+Nachbau oder Betrieb entstehen, wird keine Haftung übernommen.
