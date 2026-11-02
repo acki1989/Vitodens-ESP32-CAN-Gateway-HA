@@ -91,6 +91,96 @@ parametrische Quellskript stehen in
 
 ---
 
+## Installation
+
+**Voraussetzungen:** ESPHome 2026.10 oder neuer (Device-Builder-Add-on oder CLI),
+ESP32-C3 SuperMini, SN65HVD230, ein USB-C-**Daten**kabel (kein reines Ladekabel)
+und eine 3,3-V-Versorgung.
+
+### 1. Dateien ablegen
+
+| Datei | Ziel |
+|---|---|
+| `vitodens-can.yaml` | ESPHome-Konfigurationsordner |
+| `vitodens-uds.h` | derselbe Ordner – wird per `includes: vitodens-uds.h` eingebunden |
+
+Beim Device-Builder-Add-on ist das `/config/esphome`, bei einer CLI-Installation
+der mit `--config` gewählte Ordner. Beide Dateien müssen **nebeneinander** liegen,
+sonst bricht der Build mit `Could not find vitodens-uds.h` ab.
+
+### 2. `secrets.yaml` ergänzen
+
+Im selben Ordner (die Datei existiert meist schon):
+
+```yaml
+wifi_ssid: "MeinWLAN"
+wifi_password: "…"
+api_encryption_key: "…"   # 32 Byte, Base64
+```
+
+Schlüssel erzeugen mit `openssl rand -base64 32`. `secrets.yaml` steht in
+`.gitignore` und gehört nicht ins Repo.
+
+### 3. Prüfen und bauen
+
+```bash
+esphome config vitodens-can.yaml     # Schema + Includes prüfen
+esphome compile vitodens-can.yaml
+```
+
+Im Device Builder: Gerät `vitodens-can` öffnen → **Install**. Der erste Build
+dauert einige Minuten, weil ESP-IDF einmalig geladen wird.
+
+### 4. Erstes Flashen (USB)
+
+Device Builder: **Install → Plug into this computer** (Chrome/Edge, Web Serial).
+Per CLI:
+
+```bash
+esphome run vitodens-can.yaml --device /dev/ttyUSB0   # ggf. /dev/ttyACM0
+```
+
+Wird das Board nicht erkannt: **BOOT** halten, **RST** kurz drücken, BOOT
+loslassen und erneut flashen.
+
+Während des Flashens hängt das Board am PC – CAN-Masse und PC-Erde nicht
+gleichzeitig anklemmen (Erdungsschleife). Den Bus erst danach verbinden.
+
+### 5. WLAN
+
+Das Gerät nutzt die Zugangsdaten aus `secrets.yaml`. Klappt das nicht, öffnet es
+den Fallback-Zugang **`Vitodens-CAN`** (Passwort `vitodens-can-2026`): damit
+verbinden, `http://192.168.4.1` aufrufen und die WLAN-Daten eintragen.
+
+### 6. In Home Assistant aufnehmen
+
+Home Assistant meldet das Gerät meist selbst als entdeckt (ESPHome-Integration).
+Sonst: **Einstellungen → Geräte & Dienste → Integration hinzufügen → ESPHome**,
+Hostname/IP eintragen und den API-Schlüssel aus `secrets.yaml` hinterlegen.
+
+Danach erscheinen die 58 Entitäten mit deutschen Namen; die endgültigen
+Entitäts-IDs vergibt Home Assistant beim Anlegen.
+
+### 7. Erster Funktionstest
+
+| Prüfung | Erwartung |
+|---|---|
+| `CAN Bus Status` | `OK` |
+| `CAN Anfragen OK` | steigt im 30-s-Takt |
+| `CAN Fehler` | bleibt 0 |
+| `Datenalter` | unter 60 s |
+| `CAN Daten aktuell` | an |
+
+`BUS_OFF` oder Timeouts bei allen DIDs: Verkabelung, Busmasse und Bitrate
+prüfen – und sicherstellen, dass **kein zweiter Tester** (open3e) läuft.
+
+### Updates
+
+YAML ändern, dann `esphome run vitodens-can.yaml` (OTA) bzw. im Device Builder
+**Install → Wirelessly**. Die USB-Erstinstallation ist nur einmal nötig.
+
+---
+
 ## Protokoll
 
 ```
@@ -201,34 +291,6 @@ Jeder DID merkt sich den Zeitpunkt der letzten erfolgreichen Antwort. Ist er äl
 
 Bewusst **kein** `NAN`: Home Assistant wirft bei Sensoren mit `device_class`/`state_class`
 einen `ValueError` („non-finite value") und protokolliert das bei jedem Update.
-
----
-
-## Installation
-
-### 1. Dateien
-
-| Datei | Ziel |
-|---|---|
-| `vitodens-can.yaml` | ESPHome-Konfigurationsordner |
-| `vitodens-uds.h` | derselbe Ordner (wird per `includes:` eingebunden) |
-
-`secrets.yaml` benötigt: `wifi_ssid`, `wifi_password`, `api_encryption_key`.
-
-### 2. Bauen und flashen
-
-```bash
-esphome config vitodens-can.yaml     # Schema prüfen
-esphome compile vitodens-can.yaml
-esphome upload vitodens-can.yaml --device <IP-oder-/dev/ttyUSB0>
-```
-
-Oder über den ESPHome Device Builder: Gerät `vitodens-can` → Install.
-
-### 3. Home Assistant
-
-Das Gerät meldet sich per ESPHome-API; nach dem Hinzufügen erscheinen die 58 Entitäten
-mit deutschen Namen. Die endgültigen Entitäts-IDs vergibt Home Assistant beim Anlegen.
 
 ---
 
